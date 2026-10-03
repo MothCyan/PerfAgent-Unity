@@ -24,6 +24,9 @@ namespace PerfAgent.RuleRegression
             var tests = new Action[]
             {
                 GcAllocExplosion,
+                EditorOverheadIsNotReportedAsProjectProblem,
+                MissingBaselineSuppressesPerFrameAllocVerdict,
+                ProjectAllocAboveNoiseBandStillFires,
                 ExcessiveDrawCalls,
                 TextureMemoryLeak,
                 TempAllocatorGrowth,
@@ -80,8 +83,47 @@ namespace PerfAgent.RuleRegression
         static void GcAllocExplosion()
         {
             var snapshot = CleanSnapshot();
-            snapshot.SetMetric("每帧托管分配", "B", 64 * 1024, "gold/gc-alloc");
+            SetPerFrameAlloc(snapshot, 64 * 1024, 8 * 1024);   // 项目自身约 56 KB/帧
             AssertFinding(snapshot, "gc_alloc_per_frame", "内存", Severity.Error);
+        }
+
+        /// <summary>
+        /// 空工程回归：「每帧托管分配」很吓人，但绝大部分是编辑器自身的开销 —— 不能报成项目问题。
+        /// 数字取自本机实测：空工程两次采集分别是 102636 B/帧（含编辑器开销）与 97409 B/帧 的编辑器基线。
+        /// 不扣基线就会把一个空场景报成「严重：每帧分配超预算 50 倍」。
+        /// </summary>
+        static void EditorOverheadIsNotReportedAsProjectProblem()
+        {
+            var snapshot = CleanSnapshot();
+            SetPerFrameAlloc(snapshot, 102636, 97409);
+
+            True(snapshot.FindMetric("项目每帧分配").value > Budget.maxManagedAllocBytesPerFrame,
+                "residual must still exceed the budget, otherwise this test proves nothing");
+            True(Findings(snapshot, "gc_alloc_per_frame").Count == 0,
+                "editor overhead must not be reported as a project-level gc alloc problem");
+        }
+
+        /// <summary>没有基线就无法归因：宁可不报，也不能把含编辑器开销的数字当成项目问题。</summary>
+        static void MissingBaselineSuppressesPerFrameAllocVerdict()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.SetMetric("每帧托管分配", "B", 102636, "ProfilerRecorder: GC Allocated In Frame");
+
+            True(Findings(snapshot, "gc_alloc_per_frame").Count == 0,
+                "without an editor baseline the number is unattributable and must not be reported");
+        }
+
+        /// <summary>正向对照：项目自身分配明显越过基线噪声带时，仍然要报出来。</summary>
+        static void ProjectAllocAboveNoiseBandStillFires()
+        {
+            var snapshot = CleanSnapshot();
+            SetPerFrameAlloc(snapshot, 97409 + 60000, 97409);
+
+            var finding = Single(snapshot, f => f.id == "gc_alloc_per_frame");
+            Equal(Severity.Error, finding.severity, "gc_alloc_per_frame severity");
+            True(finding.title.IndexOf("项目每帧托管分配", StringComparison.Ordinal) >= 0,
+                "title must name the project-attributable number: " + finding.title);
+            Evidence(finding);
         }
 
         static void ExcessiveDrawCalls()
@@ -296,7 +338,7 @@ namespace PerfAgent.RuleRegression
         static void FixPlanGcAllocHasNavigationAndManualSteps()
         {
             var snapshot = CleanSnapshot();
-            snapshot.SetMetric("每帧托管分配", "B", 64 * 1024, "gold/gc-alloc");
+            SetPerFrameAlloc(snapshot, 64 * 1024, 8 * 1024);
             snapshot.codeIssues.Add(new CodeIssue
             {
                 file = "Assets/A.cs", line = 42, pattern = "linq",
@@ -857,6 +899,22 @@ namespace PerfAgent.RuleRegression
         }
 
         static List<PerfFinding> Evaluate(PerfSnapshot snapshot) { return new PerfRuleEngine().Evaluate(snapshot, Budget); }
+
+        static List<PerfFinding> Findings(PerfSnapshot snapshot, string id)
+        {
+            return Evaluate(snapshot).FindAll(f => f.id == id);
+        }
+
+        /// <summary>
+        /// 按「实测 − 编辑器基线」的口径写指标。
+        /// 「每帧托管分配」是含编辑器开销的实测值，规则只看扣掉基线后的「项目每帧分配」。
+        /// </summary>
+        static void SetPerFrameAlloc(PerfSnapshot s, double raw, double editorBaseline)
+        {
+            s.SetMetric("每帧托管分配", "B", raw, "ProfilerRecorder: GC Allocated In Frame");
+            s.SetMetric("编辑器开销基线", "B", editorBaseline, "编辑模式空转实测");
+            s.SetMetric("项目每帧分配", "B", Math.Max(0, raw - editorBaseline), "估算：实测 − 基线");
+        }
 
         static void Evidence(PerfFinding finding)
         {

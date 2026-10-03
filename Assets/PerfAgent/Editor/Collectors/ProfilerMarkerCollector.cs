@@ -68,6 +68,20 @@ namespace PerfAgent.Collectors
                 return;
             }
 
+            // 有行但全无数据（selfMs / gcAllocBytes 都是 0）说明列语义没对上。
+            // 这种排行拿出去只会误导 —— 宁可写一句「没解析出来」，也不输出一份假排行。
+            bool anyUseful = false;
+            for (int i = 0; i < collected.Count; i++)
+            {
+                if (collected[i].selfMs > 0 || collected[i].gcAllocBytes > 0 || collected[i].calls > 1) { anyUseful = true; break; }
+            }
+            if (!anyUseful)
+            {
+                s.AddNote("Profiler 层级视图能打开，但 " + collected.Count + " 行里没有任何一行带耗时或分配数据"
+                          + "（该版本列语义与预期不同），已丢弃这份排行而不是展示空数据。可用 Tools/PerfAgent/API 探针 看列内容。");
+                return;
+            }
+
             collected.Sort((a, b) => b.selfMs.CompareTo(a.selfMs));
             s.markers = collected;
 

@@ -206,7 +206,17 @@ namespace PerfAgent.Core
             EditorApplication.delayCall += delegate
             {
                 if (_job == null || _job.phase != PlayModeTestPhase.Entering) return;
-                EditorApplication.EnterPlaymode();
+
+                // 趁还在编辑模式，量一次编辑器开销基线 —— 进了 Play 就测不到了，
+                // 而没基线就无法把编辑器自身的分配从「每帧托管分配」里区分出来。
+                EditorOverheadBaseline.Measure(delegate
+                {
+                    EditorApplication.delayCall += delegate
+                    {
+                        if (_job == null || _job.phase != PlayModeTestPhase.Entering) return;
+                        EditorApplication.EnterPlaymode();
+                    };
+                });
             };
 
             return request;

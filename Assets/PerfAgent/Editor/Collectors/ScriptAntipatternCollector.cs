@@ -161,22 +161,102 @@ namespace PerfAgent.Collectors
                 catch { skipped++; }
             }
 
-            s.SetMetric("已扫描脚本", "个", scanned, "Assets/**/*.cs");
+            s.SetMetric("已扫描脚本", "个", scanned, "Assets/**/*.cs（不含插件自身与 Editor 专用代码）");
             s.SetMetric("代码问题数", "个", s.codeIssues.Count, "每帧方法体内的反模式");
-            if (skipped > 0) s.AddNote("脚本扫描跳过 " + skipped + " 个文件（第三方/生成代码/超大文件）。");
+            if (skipped > 0)
+                s.AddNote("脚本扫描跳过 " + skipped + " 个文件（插件自身 / Editor 专用代码 / 第三方 / 生成代码 / 超大文件）。"
+                          + "本插件只对自己安装目录以外的、会进到玩家构建里的脚本报问题。");
         }
 
         static bool ShouldSkip(string fullPath)
         {
             string p = fullPath.ToLowerInvariant();
             if (p.Contains("/textmesh pro/")) return true;
-            if (p.Contains("/plugins/")) return false;          // 插件仍需扫描，但下面会按扩展/后缀过滤
             if (p.Contains("/packages/")) return true;
-            if (p.EndsWith(".designer.cs") || p.EndsWith(".g.cs") || p.EndsWith(".generated.cs")) return true;
-            if (p.EndsWith(".meta")) return true;
             if (p.Contains("/library/")) return true;
             if (p.Contains("/obj/")) return true;
+            if (p.EndsWith(".designer.cs") || p.EndsWith(".g.cs") || p.EndsWith(".generated.cs")) return true;
+            if (p.EndsWith(".meta")) return true;
+
+            // Unity 约定：名为 Editor 的文件夹（以及 *.Editor.cs）不参与构建，
+            // 里面的 OnGUI / Update 只在编辑器里跑，跟玩家端的每帧开销无关。
+            // 「SettingsProvider.OnGUI(string)」这类编辑器 IMGUI 回调被当成每帧方法，
+            // 正是从这条路径进来的误报。
+            if (p.Contains("/editor/")) return true;
+            if (p.EndsWith(".editor.cs")) return true;
+            if (IsInEditorAssemblyDir(p)) return true;
+
+            // 工具自身：扫描根是整个 Assets/，而插件自己就装在 Assets/PerfAgent 下。
+            // 不排除的话，工具会把自己的代码当成「项目的每帧分配问题」报出去。
+            string own = OwnRoot();
+            if (own.Length > 0 && p.StartsWith(own + "/")) return true;
+            if (p.Contains("/perfagent/") || p.Contains("/perfagent.mcp")) return true;
+
             return false;
+        }
+
+        /// <summary>
+        /// 本插件自身的源码根（形如 "assets/perfagent"，小写正斜杠）——从本程序集的 asmdef 位置反推。
+        ///
+        /// 用 asmdef 而不是写死 "Assets/PerfAgent"：包可以嵌在任意目录，也可以被移到别处，
+        /// 而 asmdef 的位置永远是准的。
+        /// </summary>
+        static string OwnRoot()
+        {
+            if (_ownRoot != null) return _ownRoot;
+            _ownRoot = "";
+            try
+            {
+                string asmName = typeof(ScriptAntipatternCollector).Assembly.GetName().Name;
+                string asmdef = UnityEditor.Compilation.CompilationPipeline
+                    .GetAssemblyDefinitionFilePathFromAssemblyName(asmName);
+                string rel = (asmdef ?? "").Replace('\\', '/');
+                const string prefix = "Assets/";
+                if (rel.StartsWith(prefix))
+                {
+                    string rest = rel.Substring(prefix.Length);          // PerfAgent/Editor/PerfAgent.Editor.asmdef
+                    int slash = rest.IndexOf('/');
+                    if (slash > 0) _ownRoot = (prefix + rest.Substring(0, slash)).ToLowerInvariant();
+                }
+            }
+            catch { }
+            return _ownRoot;
+        }
+
+        static string _ownRoot;
+        static HashSet<string> _editorAsmFiles;
+
+        /// <summary>
+        /// 该文件是否属于「只编给编辑器用」的程序集（asmdef 里 includePlatforms 含 Editor）。
+        /// 文件夹叫不叫 Editor 都能覆盖到。
+        /// </summary>
+        static bool IsInEditorAssemblyDir(string lowerPath)
+        {
+            if (_editorAsmFiles == null)
+            {
+                var set = new HashSet<string>();
+                try
+                {
+                    var asms = UnityEditor.Compilation.CompilationPipeline.GetAssemblies(
+                        UnityEditor.Compilation.AssembliesType.Editor);
+                    for (int i = 0; i < asms.Length; i++)
+                    {
+                        var a = asms[i];
+                        if ((a.flags & UnityEditor.Compilation.AssemblyFlags.EditorAssembly) == 0) continue;
+                        if (a.sourceFiles == null) continue;
+                        for (int j = 0; j < a.sourceFiles.Length; j++)
+                        {
+                            string f = a.sourceFiles[j];
+                            if (string.IsNullOrEmpty(f)) continue;
+                            set.Add(f.Replace('\\', '/').ToLowerInvariant());
+                        }
+                    }
+                }
+                catch { }
+                _editorAsmFiles = set;
+            }
+
+            return _editorAsmFiles.Contains(lowerPath);
         }
 
         void ScanFile(PerfSnapshot s, string root, string fullPath, string text)

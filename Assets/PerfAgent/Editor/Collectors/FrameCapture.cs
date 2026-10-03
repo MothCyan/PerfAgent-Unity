@@ -292,6 +292,44 @@ namespace PerfAgent.Collectors
                           "该口径会低估分配量，结论的严重度判断可能偏乐观。请运行 API 探针确认计数器可用性。");
             }
 
+            // ---- 归因：把编辑器自身的每帧开销从「每帧托管分配」里剥出来 ----
+            //
+            // 必须剥的原因：GC Allocated In Frame 统计的是**整个编辑器进程**当帧的托管分配，
+            // 包含 Inspector / SceneView / GUI、Profiler 记录，以及本工具自己的采样与界面刷新。
+            // 实测：同一个空工程两次采集的 P50 分别是 16871 B 与 97409 B（差 6 倍）——
+            // 差的是编辑器状态，不是项目的分配。不剥就会把空工程报成严重问题。
+            var perFrameAlloc = s.FindMetric("每帧托管分配");
+            if (perFrameAlloc != null && !double.IsNaN(perFrameAlloc.value))
+            {
+                double baseline;
+                string baselineWhy;
+                if (EditorOverheadBaseline.TryGet(out baseline, out baselineWhy))
+                {
+                    s.SetMetric("编辑器开销基线", "B", baseline,
+                        "编辑模式空转实测（含编辑器与工具自身开销；" + EditorOverheadBaseline.Samples + " 个样本的中位数）");
+
+                    double residual = perFrameAlloc.value - baseline;
+                    if (residual < 0) residual = 0;
+                    s.SetMetric("项目每帧分配", "B", residual, "估算：每帧托管分配（实测）− 编辑器开销基线");
+
+                    s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                        "每帧托管分配已分口径：实测 {0:0} B/帧（含编辑器自身开销）− 编辑器基线 {1:0} B/帧 = 项目自身约 {2:0} B/帧。"
+                        + "基线是编辑模式下空转实测的，而采集发生在 Play 模式，两者开销不会完全一致，因此「项目每帧分配」是估算值；"
+                        + "只有它明显超过预算且超出基线噪声带时才会被当成项目问题。",
+                        perFrameAlloc.value, baseline, residual));
+
+                    if (residual <= 0)
+                        s.AddNote("每帧托管分配与编辑器空闲基线相当 —— 这部分是编辑器自身的开销，不计为项目问题。");
+                }
+                else
+                {
+                    s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                        "本次没有可用的「编辑器开销基线」（{0}）：实测 {1:0} B/帧 里含编辑器自身的开销，"
+                        + "无法区分出项目贡献 —— 因此本次不对「每帧托管分配」下任何结论（宁可不说，也不把编辑器开销算到项目头上）。",
+                        baselineWhy, perFrameAlloc.value));
+                }
+            }
+
             s.SetMetric("GC 次数", "次", gcEvents, "采样窗口内 GC.GetTotalMemory 回退次数");
             s.SetMetric("TempAllocator 峰值", "B", tempMax, "Profiler.GetTempAllocatorSize 峰值");
             if (dcCount > 0)

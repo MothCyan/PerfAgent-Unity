@@ -102,6 +102,8 @@ namespace PerfAgent.UI
             EditorGUILayout.Space(6);
             EditorGUILayout.HelpBox(
                 "提示：诊断在编辑器内进行，测得的数据包含编辑器本身的开销。\n" +
+                "「每帧托管分配」会自动扣除一个「编辑器开销基线」（采集前在编辑模式空转 0.4 秒实测），" +
+                "只对扣除后的「项目每帧分配」下结论；没有基线时不报该结论。\n" +
                 "用于最终确认时，请使用 Development Build + Autoconnect Profiler，或在真机上读取 ProfilerRecorder。",
                 MessageType.Info);
         }

@@ -149,25 +149,44 @@ namespace PerfAgent.Analysis
 
         static void EvaluateAllocations(List<PerfFinding> outList, PerfSnapshot s, PerfBudget b)
         {
-            var alloc = s.FindMetric("每帧托管分配");
+            var rawAlloc = s.FindMetric("每帧托管分配");
+            var baseline = s.FindMetric("编辑器开销基线");
+            var alloc = s.FindMetric("项目每帧分配");
+
+            // 只对「扣除编辑器开销后的估算值」下结论。
+            // 拿含编辑器开销的实测值去比播放器预算，会把空工程报成严重问题 ——
+            // 那是工具制造的假问题，不是项目的问题。没有归因结果时宁可不报。
             if (alloc != null && !double.IsNaN(alloc.value))
             {
-                if (alloc.value > b.maxManagedAllocBytesPerFrame)
+                // 基线与 Play 模式的实际开销不完全一致，留一条噪声带；没量到基线就不信任残差
+                double noise = baseline == null ? double.MaxValue : Math.Max(4096.0, baseline.value * 0.25);
+
+                if (alloc.value > b.maxManagedAllocBytesPerFrame && alloc.value > noise)
                 {
                     var f = New("gc_alloc_per_frame", "内存", Severity.Error,
-                        string.Format(CultureInfo.InvariantCulture, "每帧托管分配 {0:0} B，超出预算 {1} B", alloc.value, b.maxManagedAllocBytesPerFrame),
-                        "稳态每帧分配会导致 GC 周期性触发，表现为规律性卡顿尖峰。",
-                        "扫描脚本反模式列表（get_code_issues），优先处理每帧 new 容器/字符串/LINQ 的写法。", 0.85f);
-                    Ev(f, "frame_capture", "每帧托管分配", Fmt(alloc.value), "B", b.maxManagedAllocBytesPerFrame.ToString(CultureInfo.InvariantCulture), "GC.GetTotalMemory 差值");
+                        string.Format(CultureInfo.InvariantCulture, "项目每帧托管分配约 {0:0} B，超出预算 {1} B",
+                            alloc.value, b.maxManagedAllocBytesPerFrame),
+                        string.Format(CultureInfo.InvariantCulture,
+                            "已扣除编辑器自身开销（实测 {0:0} B/帧 − 基线 {1:0} B/帧）。"
+                            + "稳态每帧分配会导致 GC 周期性触发，表现为规律性卡顿尖峰。",
+                            rawAlloc == null ? 0 : rawAlloc.value,
+                            baseline == null ? 0 : baseline.value),
+                        "扫描脚本反模式列表（get_code_issues），优先处理每帧 new 容器/字符串/LINQ 的写法。", 0.8f);
+                    Ev(f, "frame_capture", "项目每帧分配", Fmt(alloc.value), "B",
+                        b.maxManagedAllocBytesPerFrame.ToString(CultureInfo.InvariantCulture), alloc.source);
+                    if (rawAlloc != null)
+                        Ev(f, "frame_capture", "每帧托管分配（含编辑器开销）", Fmt(rawAlloc.value), "B", "", rawAlloc.source);
+                    if (baseline != null)
+                        Ev(f, "frame_capture", "编辑器开销基线", Fmt(baseline.value), "B", "", baseline.source);
                     outList.Add(f);
                 }
-                else if (alloc.value > 0 && b.maxManagedAllocBytesPerFrame == 0)
+                else if (alloc.value > 0 && b.maxManagedAllocBytesPerFrame == 0 && alloc.value > noise)
                 {
                     var f = New("gc_alloc_nonzero", "内存", Severity.Warn,
                         string.Format(CultureInfo.InvariantCulture, "存在每帧托管分配（{0:0} B/帧），零分配目标未达成", alloc.value),
-                        "即使单帧量小，长时间运行仍会累积触发 GC。",
+                        "即使单帧量小，长时间运行仍会累积触发 GC。已扣除编辑器自身开销。",
                         "定位每帧分配点：字符串拼接、装箱、闭包、容器扩容。", 0.7f);
-                    Ev(f, "frame_capture", "每帧托管分配", Fmt(alloc.value), "B", "0 B", "GC.GetTotalMemory 差值");
+                    Ev(f, "frame_capture", "项目每帧分配", Fmt(alloc.value), "B", "0 B", alloc.source);
                     outList.Add(f);
                 }
             }

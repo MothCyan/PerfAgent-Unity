@@ -125,7 +125,11 @@ namespace PerfAgent.Core
         {
             if (snapshot == null || budget == null) return;
             SetBudget(snapshot, "主线程帧耗时", budget.FrameBudgetMs(), "ms");
-            SetBudget(snapshot, "每帧托管分配", budget.maxManagedAllocBytesPerFrame, "B");
+            // 「每帧托管分配」是含编辑器开销的实测值，不能直接套播放器预算 ——
+            // 否则空工程也会被标成超标。预算只套在归因后的「项目每帧分配」上；
+            // 没有归因结果（没测到基线）时干脆不标预算。
+            if (snapshot.FindMetric("项目每帧分配") != null)
+                SetBudget(snapshot, "项目每帧分配", budget.maxManagedAllocBytesPerFrame, "B");
             SetBudget(snapshot, "Draw Calls", budget.maxDrawCalls, "次");
             SetBudget(snapshot, "SetPass Calls", budget.maxSetPassCalls, "次");
             SetBudget(snapshot, "Triangles", budget.maxTriangles, "个");

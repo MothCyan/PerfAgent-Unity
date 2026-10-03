@@ -27,6 +27,18 @@ namespace PerfAgent.UI
         Button _sendButton;
         double _nextJobPoll;
         string _lastNotifiedJobId = "";
+
+        /// <summary>
+        /// 跟随采集状态栏的限流。
+        ///
+        /// PollPlayModeJob 挂在 EditorApplication.update 上（每个编辑器帧都会跑），
+        /// 采集期间逐帧拼字符串 + 赋值 Label.text 会触发界面重排 —— 这些分配会被
+        /// 「GC Allocated In Frame」计数器算进去，**工具等于在污染自己的测量结果**。
+        /// 所以状态栏最多每 0.25 秒、且帧数变化时才刷一次。
+        /// </summary>
+        double _nextFollowPoll;
+        int _lastFollowFrames = -1;
+
         VisualElement _tabRow;
 
         /// <summary>LLM 配置状态条：让用户不用去 Project Settings 就能看到当前状态并就地配置。</summary>
@@ -306,11 +318,20 @@ namespace PerfAgent.UI
             // 跟随采集优先显示：那是用户正在交互的模式，状态必须实时可见
             if (FollowCapture.Capturing)
             {
-                SetStatus("跟随采集中（你自己操作）：已记录 " + FollowCapture.CapturedFrames
+                // 限流（见 _nextFollowPoll 的注释）：采集期间每帧重绘状态栏 = 每帧分配，
+                // 会把工具自身的开销算进被测对象的「每帧托管分配」里。
+                int frames = FollowCapture.CapturedFrames;
+                double nowCapturing = EditorApplication.timeSinceStartup;
+                if (frames == _lastFollowFrames || nowCapturing < _nextFollowPoll) return;
+
+                _lastFollowFrames = frames;
+                _nextFollowPoll = nowCapturing + 0.25;
+                SetStatus("跟随采集中（你自己操作）：已记录 " + frames
                     + " 帧。结束时点「跟随采集」按钮，或直接退出 Play。");
                 return;
             }
 
+            _lastFollowFrames = -1;
             if (FollowCapture.Armed)
             {
                 SetStatus("跟随采集已待命：进入 Play 模式后会自动开始记录。点「跟随采集」可取消。");

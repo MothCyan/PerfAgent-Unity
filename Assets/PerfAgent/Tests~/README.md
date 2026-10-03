@@ -85,4 +85,4 @@ Move-Item PerfAgent/Tests~/Editor PerfAgent/Tests/Editor
 
 `Tests~` 目录以 `~` 结尾，Unity 会忽略它，不会把桩类型导入编辑器程序集。
 
-回归结果应为 `33/33 passed`，任一用例失败时进程返回码为 `1`。
+回归结果应为 `36/36 passed`，任一用例失败时进程返回码为 `1`。

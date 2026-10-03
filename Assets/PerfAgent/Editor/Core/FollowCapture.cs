@@ -85,6 +85,12 @@ namespace PerfAgent.Core
             SessionState.SetBool(SessionKey, true);
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
 
+            // 趁现在还在编辑模式，量一次「编辑器空闲开销基线」。
+            // 不量的话，「每帧托管分配」里编辑器自身的开销会被当项目的分配
+            //（一个空工程也能报出上百 KB/帧）；而一旦进了 Play 就再也测不准了。
+            // 测量约 0.4 秒，不阻塞 —— 用户点完按钮再进 Play 通常远不止这么久。
+            EditorOverheadBaseline.Measure(null);
+
             // 已经在 Play 里的话立刻开始 —— 不让用户为了开始采集先退出再重进一次
             if (EditorApplication.isPlaying) BeginCapture();
 

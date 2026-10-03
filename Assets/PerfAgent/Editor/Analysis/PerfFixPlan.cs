@@ -447,7 +447,11 @@ namespace PerfAgent.Analysis
                 case "gc_frequency":
                 case "marker_gc_alloc":
                     AddCodeNavigation(snapshot, plan, "跳到每帧分配点");
-                    AddManual(plan, "消除每帧分配", "逐个处理扫描出的位置：容器改为复用字段、字符串改用 StringBuilder/缓存、避免 LINQ 与闭包装箱。");
+                    // 扫描结果为空时不能写「逐个处理扫描出的位置」—— 那会让人以为有位置可看
+                    if (snapshot.codeIssues == null || snapshot.codeIssues.Count == 0)
+                        AddManual(plan, "用 Profiler 确认分配来源", "当前没扫到每帧分配点（扫描只覆盖会进构建的脚本，不含插件自身与 Editor 专用代码）。请在 Profiler 窗口按帧看 GC Alloc 列，定位到具体函数后再回来处理。");
+                    else
+                        AddManual(plan, "消除每帧分配", "逐个处理扫描出的位置：容器改为复用字段、字符串改用 StringBuilder/缓存、避免 LINQ 与闭包装箱。");
                     AddManual(plan, "不要用 GC.Collect 兜底", "手动触发 GC 只会把卡顿集中到调用点，治标不治本。");
                     break;
 
