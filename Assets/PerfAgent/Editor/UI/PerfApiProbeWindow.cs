@@ -111,45 +111,54 @@ namespace PerfAgent.UI
             {
                 var view = ProfilerApi.GetHierarchyView(ProfilerApi.LastFrameIndex, 0);
                 sb.Append("最近一帧的 HierarchyFrameDataView: ").Append(view == null ? "取不到" : "OK").Append('\n');
-                if (view != null)
+                try
                 {
-                    bool valid;
-                    Reflect.TryGetBool(view, "valid", out valid);
-                    int count;
-                    Reflect.TryGetInt(view, "sampleCount", out count);
-                    sb.Append("  valid=").Append(valid).Append("  sampleCount=").Append(count)
-                      .Append("  columnCount=").Append(ProfilerApi.GetColumnCount(view)).Append('\n');
-                    var root = ProfilerApi.GetRootItemId(view);
-                    var children = ProfilerApi.GetChildren(view, root);
-                    sb.Append("  根项 id=").Append(root).Append("，子项 ").Append(children.Count).Append(" 个\n");
-                    if (children.Count > 0)
+                    if (view != null)
                     {
-                        sb.Append("  首个子项 name=\"").Append(ProfilerApi.GetItemName(view, children[0])).Append("\"");
-                        for (int col = 0; col < ProfilerApi.GetColumnCount(view); col++)
-                        {
-                            string cell = ProfilerApi.GetItemColumn(view, children[0], col);
-                            sb.Append("  [").Append(col).Append("]=").Append(cell ?? "-");
-                        }
-                        sb.Append('\n');
+                        bool valid;
+                        Reflect.TryGetBool(view, "valid", out valid);
+                        int count;
+                        Reflect.TryGetInt(view, "sampleCount", out count);
+                        sb.Append("  valid=").Append(valid).Append("  sampleCount=").Append(count)
+                          .Append("  columnCount=").Append(ProfilerApi.GetColumnCount(view)).Append('\n');
 
-                        // 列语义是从内容反推的（该视图没有列名 API），这里把识别结果显示出来，
-                        // 免得下次又靠人肉看 [0]=xxx [1]=0.0% 去猜。
-                        var sampleRows = new List<string[]>();
-                        for (int i = 0; i < children.Count; i++)
+                        var root = ProfilerApi.GetRootItemId(view);
+                        var children = ProfilerApi.GetChildren(view, root);
+                        sb.Append("  根项 id=").Append(root).Append("，子项 ").Append(children.Count).Append(" 个\n");
+                        if (children.Count > 0)
                         {
-                            var row = new string[ProfilerApi.GetColumnCount(view)];
-                            for (int col = 0; col < row.Length; col++)
-                                row[col] = ProfilerApi.GetItemColumn(view, children[i], col);
-                            sampleRows.Add(row);
+                            sb.Append("  首个子项 name=\"").Append(ProfilerApi.GetItemName(view, children[0])).Append("\"");
+                            for (int col = 0; col < ProfilerApi.GetColumnCount(view); col++)
+                            {
+                                string cell = ProfilerApi.GetItemColumn(view, children[0], col);
+                                sb.Append("  [").Append(col).Append("]=").Append(cell ?? "-");
+                            }
+                            sb.Append('\n');
+
+                            // 列语义是从内容反推的（该视图没有列名 API），这里把识别结果显示出来，
+                            // 免得下次又靠人肉看 [0]=xxx [1]=0.0% 去猜。
+                            var sampleRows = new List<string[]>();
+                            for (int i = 0; i < children.Count; i++)
+                            {
+                                var row = new string[ProfilerApi.GetColumnCount(view)];
+                                for (int col = 0; col < row.Length; col++)
+                                    row[col] = ProfilerApi.GetItemColumn(view, children[i], col);
+                                sampleRows.Add(row);
+                            }
+                            var layout = ProfilerColumnLayout.Detect(sampleRows);
+                            sb.Append("  识别到的列语义：").Append(layout.Describe()).Append('\n');
                         }
-                        var layout = ProfilerColumnLayout.Detect(sampleRows);
-                        sb.Append("  识别到的列语义：").Append(layout.Describe()).Append('\n');
                     }
+                }
+                finally
+                {
+                    // 原生视图必须释放
+                    ProfilerApi.ReleaseView(view);
                 }
             }
             else
             {
-                sb.Append("（无可用帧：请先打开 Profiler 窗口并让编辑器运行几帧，或直接点抓帧）\n");
+                sb.Append("（无可用帧：请先打开 Profiler 窗口并让编辑器运行几帧，或直接点采集）\n");
             }
             sb.Append('\n');
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using PerfAgent.Collectors;
 using PerfAgent.Utils;
@@ -72,6 +73,19 @@ namespace PerfAgent.Core
             if (idx >= sorted.Count) idx = sorted.Count - 1;
             return sorted[idx];
         }
+
+        /// <summary>整体缩放（例如面板以秒为单位，统一换成毫秒），并重算统计。</summary>
+        public void Scale(double factor)
+        {
+            if (values == null || factor == 1.0) return;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] <= 0f) continue;
+                values[i] = (float)(values[i] * factor);
+            }
+            mean = 0; p50 = 0; p95 = 0; max = 0; validCount = 0;
+            ComputeStats();
+        }
     }
 
     /// <summary>
@@ -101,6 +115,12 @@ namespace PerfAgent.Core
         /// <summary>帧耗时的实际来源说明（写进快照，便于核验）。</summary>
         public string frameTimeSource = "";
 
+        /// <summary>面板统计序列形式的面板帧耗时（整段窗口）；不可用时为 null。</summary>
+        public PanelSeries frameTime;
+
+        /// <summary>抽样因超时间预算而被截断。</summary>
+        public bool sampleBudgetHit;
+
         /// <summary>被丢弃的启动拖动帧数（0 = 没丢）。</summary>
         public int warmupFramesDropped;
 
@@ -121,8 +141,17 @@ namespace PerfAgent.Core
     /// </summary>
     public static class ProfilerPanel
     {
-        /// <summary>单次分析最多抽多少帧读「单帧明细」（帧耗时/热点）。</summary>
-        public const int MaxSamples = 300;
+        /// <summary>
+        /// 单次分析最多抽多少帧创建**原生视图**（帧耗时明细）。
+        ///
+        /// 这个数必须小：每个视图都要 Dispose，而且编辑器帧的帧数据不小。
+        /// 曾经是 300，结果把 16 GB 机器的内存顶穿、 Unity 崩掉。
+        /// 能用面板统计序列时根本不会创建视图（见 TryUseFrameTimeSeries）。
+        /// </summary>
+        public const int MaxSamples = 60;
+
+        /// <summary>读帧明细的时间预算（毫秒）；超了就停下并写明（宁可少采，不把编辑器拖死）。</summary>
+        public const int SampleTimeBudgetMs = 1500;
 
         /// <summary>单次分析最多覆盖多少帧（面板默认历史也就两千帧）。</summary>
         public const int MaxWindowFrames = 5000;
@@ -261,9 +290,20 @@ namespace PerfAgent.Core
             int wanted = Math.Min(Math.Max(1, maxSamples), total);
             data.sampleStep = wanted <= 0 ? 1 : Math.Max(1, total / wanted);
 
+            // 优先：面板统计序列。一条序列就拿到整段窗口的帧耗时，**完全不用创建原生视图**。
+            if (TryUseFrameTimeSeries(data, wanted)) return;
+
+            // 退回：少量帧的原生视图（读 PlayerLoop 行），带时间预算，且每个视图用完立即 Dispose
+            var clock = Stopwatch.StartNew();
             int lastAdded = -1;
             for (int i = 0; i < wanted; i++)
             {
+                if (clock.ElapsedMilliseconds > SampleTimeBudgetMs)
+                {
+                    data.sampleBudgetHit = true;
+                    break;
+                }
+
                 // 均匀取样；一定包含最后一帧（「刚才那一下」通常就在末尾）
                 int idx = total <= wanted
                     ? data.firstFrame + i
@@ -273,25 +313,95 @@ namespace PerfAgent.Core
                 var view = ProfilerApi.GetHierarchyView(idx, 0);
                 if (view == null) continue;
 
-                bool valid;
-                if (Reflect.TryGetBool(view, "valid", out valid) && !valid) continue;
+                try
+                {
+                    bool valid;
+                    if (Reflect.TryGetBool(view, "valid", out valid) && !valid) continue;
 
-                double ms = ReadFrameTimeMs(view, data);
-                if (ms <= 0) continue;
+                    double ms = ReadFrameTimeMs(view, data);
+                    if (ms <= 0) continue;
 
-                lastAdded = idx;
-                var stat = new FrameStat();
-                stat.frame = idx;
-                stat.deltaMs = ms;
-                stat.allocInFrameBytes = data.gcAlloc == null ? 0L : data.gcAlloc.ValueAt(idx);
-                stat.drawCalls = (int)(data.drawCalls == null ? 0L : data.drawCalls.ValueAt(idx));
-                stat.setPassCalls = (int)(data.setPass == null ? 0L : data.setPass.ValueAt(idx));
-                stat.triangles = data.triangles == null ? 0L : data.triangles.ValueAt(idx);
-                stat.batches = (int)(data.batches == null ? 0L : data.batches.ValueAt(idx));
-                stat.tempAllocBytes = 0L;
-                stat.totalMemoryBytes = data.totalUsed == null ? 0L : data.totalUsed.ValueAt(idx);
-                data.samples.Add(stat);
+                    lastAdded = idx;
+                    AddSample(data, idx, ms);
+                }
+                finally
+                {
+                    // 不释放 = 把这一帧的帧数据钉在内存里
+                    ProfilerApi.ReleaseView(view);
+                }
             }
+
+            if (data.sampleBudgetHit)
+                data.notes.Add("读单帧明细超时（" + SampleTimeBudgetMs + " ms），只采到 "
+                               + data.samples.Count + " 帧就停了 —— 帧耗时分位基于这些样本。");
+        }
+
+        static void AddSample(PanelCaptureData data, int idx, double ms)
+        {
+            var stat = new FrameStat();
+            stat.frame = idx;
+            stat.deltaMs = ms;
+            stat.allocInFrameBytes = data.gcAlloc == null ? 0L : data.gcAlloc.ValueAt(idx);
+            stat.drawCalls = (int)(data.drawCalls == null ? 0L : data.drawCalls.ValueAt(idx));
+            stat.setPassCalls = (int)(data.setPass == null ? 0L : data.setPass.ValueAt(idx));
+            stat.triangles = data.triangles == null ? 0L : data.triangles.ValueAt(idx);
+            stat.batches = (int)(data.batches == null ? 0L : data.batches.ValueAt(idx));
+            stat.tempAllocBytes = 0L;
+            stat.totalMemoryBytes = data.totalUsed == null ? 0L : data.totalUsed.ValueAt(idx);
+            data.samples.Add(stat);
+        }
+
+        /// <summary>
+        /// 尝试用面板的 **统计序列**（就是面板图表用的那条）拿帧耗时 —— 一条序列覆盖整段窗口，
+        /// 而且不涉及任何原生视图。名字跨版本会变，所以按候选词匹配 + 合理性检查
+        ///（中位值要落在 0.5~500 ms，面板可能以秒为单位），匹配不上就退回视图方案。
+        /// </summary>
+        static bool TryUseFrameTimeSeries(PanelCaptureData data, int wanted)
+        {
+            var props = ProfilerApi.AllStatisticsProperties();
+            if (props == null || props.Length == 0) return false;
+
+            string[] candidates = { "Frame Time", "FrameTime", "CPU Time", "Main Thread", "MainThread" };
+            for (int c = 0; c < candidates.Length; c++)
+            {
+                for (int p = 0; p < props.Length; p++)
+                {
+                    if (props[p].IndexOf(candidates[c], StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                    int id = ProfilerApi.StatisticsIdentifier(props[p]);
+                    if (id == 0) continue;
+
+                    var series = new PanelSeries();
+                    series.category = "Statistics";
+                    series.name = props[p];
+                    series.firstFrame = data.firstFrame;
+                    series.values = new float[data.frameCount];
+                    series.readable = ProfilerApi.ReadStatisticSeries(id, data.firstFrame, series.values);
+                    series.ComputeStats();
+
+                    if (!series.readable || series.validCount < data.frameCount / 2) continue;
+
+                    bool perSecond = series.p50 > 0 && series.p50 < 0.5;
+                    double median = perSecond ? series.p50 * 1000.0 : series.p50;
+                    if (median < 0.5 || median > 500) continue;
+
+                    if (perSecond) series.Scale(1000.0);
+                    data.frameTime = series;
+                    data.frameTimeSource = "Profiler 面板统计序列 " + props[p]
+                        + (perSecond ? "（原单位为秒，已换算为毫秒）" : "") + "，覆盖整段窗口每一帧";
+
+                    for (int i = 0; i < wanted; i++)
+                    {
+                        int idx = data.frameCount <= wanted
+                            ? data.firstFrame + i
+                            : data.firstFrame + (int)((long)i * (data.frameCount - 1) / Math.Max(1, wanted - 1));
+                        long ms = series.ValueAt(idx);
+                        if (ms > 0) AddSample(data, idx, ms);
+                    }
+                    return data.samples.Count > 0;
+                }
+            }
+            return false;
         }
 
         /// <summary>

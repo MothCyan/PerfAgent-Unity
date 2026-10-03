@@ -432,6 +432,19 @@ namespace PerfAgent.Core
             try { return Convert.ToInt32(v); } catch { return 0; }
         }
 
+        /// <summary>
+        /// 释放一个 FrameDataView。
+        ///
+        /// <b>必须调用。</b> GetHierarchyFrameDataView 返回的是原生视图，不 Dispose 会把那一帧的
+        /// 帧数据钉在 Profiler 内存里。一次分析读几百帧而不释放，能把机器的提交内存顶穿 ——
+        /// 实测：16 GB 内存的机器上连跑两次分析，提交内存撞上限，Unity 直接崩掉。
+        /// </summary>
+        public static void ReleaseView(object view)
+        {
+            if (view == null) return;
+            try { Reflect.Invoke(view, "Dispose"); } catch { }
+        }
+
         /// <summary>诊断信息，用于探针窗口与报告 notes。</summary>
         public static string DescribeAvailability()
         {

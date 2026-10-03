@@ -108,6 +108,19 @@ namespace PerfAgent.Collectors
             var view = ProfilerApi.GetHierarchyView(frameIndex, 0);
             if (view == null) return null;
 
+            try
+            {
+                return ReadFrameFromView(view, topN);
+            }
+            finally
+            {
+                // 原生视图必须释放，否则这一帧的帧数据会被钉住（读多了会把内存吃穿）
+                ProfilerApi.ReleaseView(view);
+            }
+        }
+
+        List<MarkerStat> ReadFrameFromView(object view, int topN)
+        {
             bool valid;
             if (Reflect.TryGetBool(view, "valid", out valid) && !valid) return null;
 
