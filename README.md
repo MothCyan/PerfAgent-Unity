@@ -68,5 +68,7 @@ Packages/manifest.json            已接入 MCP for Unity v10.2.0 与本地桥�
 
 ## 许可
 
-尚未添加 LICENSE 文件。在添加之前，默认保留所有权利（All rights reserved）。
-如果要开源给他人使用，建议补一个（MIT / Apache-2.0 等）。
+[MIT](LICENSE) © 2026 MothCyan
+
+可以自由使用、修改、分发（含商业用途），只需保留版权与许可声明。
+软件按「原样」提供，不附带任何担保。
