@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
@@ -210,8 +211,13 @@ namespace PerfAgent.UI
             sb.Append("  TMPro.TMP_Text                       ").Append(Reflect.FindType("TMPro.TMP_Text") != null ? "存在" : "缺失").Append('\n');
             sb.Append('\n');
 
-            // ---- 5. 成员清单 ----
-            sb.Append("【5】类型成员清单（供适配代码参考）\n\n");
+            // ---- 5. Profiler 面板帧历史（可作为不自采样的数据源）----
+            sb.Append("【5】Profiler 面板帧历史（不自己采样，直接读面板已记录的数据）\n");
+            AppendPanelHistory(sb);
+            sb.Append('\n');
+
+            // ---- 6. 成员清单 ----
+            sb.Append("【6】类型成员清单（供适配代码参考）\n\n");
             AppendType(sb, "UnityEditorInternal.ProfilerDriver", ProfilerApi.Driver);
             AppendType(sb, "UnityEditor.Profiling.HierarchyFrameDataView", ProfilerApi.HierarchyView);
             AppendType(sb, "UnityEditor.Profiling.FrameDataView", ProfilerApi.FrameDataView);
@@ -219,6 +225,182 @@ namespace PerfAgent.UI
             AppendType(sb, "UnityEditorInternal.UnityStats", unityStats);
 
             _output.text = sb.ToString();
+        }
+
+        /// <summary>
+        /// 【5】Profiler 面板帧历史。
+        ///
+        /// 这一节能回答「不自采样能不能拿到数据」：面板已经记录了帧历史，
+        ///   帧耗时 → HierarchyFrameDataView.frameTimeMs（引擎自己测的，不用 Stopwatch 估）
+        ///   各类计数器 → ProfilerDriver.GetCounterValuesBatchByCategory（与面板图表同源）
+        ///   面板图表属性 → GetAllStatisticsProperties / GetStatisticsValues
+        /// 名字/类别对不上时这里会直接显示「无有效样本」，不会默默给 0。
+        /// </summary>
+        void AppendPanelHistory(StringBuilder sb)
+        {
+            int first = ProfilerApi.FirstFrameIndex;
+            int last = ProfilerApi.LastFrameIndex;
+            int count = last >= first ? last - first + 1 : 0;
+
+            sb.Append("  帧范围: ").Append(first).Append(" ~ ").Append(last)
+              .Append("（共 ").Append(count).Append(" 帧）")
+              .Append("  maxHistoryLength=").Append(ProfilerApi.MaxHistoryLength).Append('\n');
+
+            if (!ProfilerApi.CanReadFrames || count <= 0)
+            {
+                sb.Append("  面板还没有可用帧（先让 Profiler 录一段）。\n");
+                return;
+            }
+
+            // 抽查三帧：只需确认 frameTimeMs 能拿到
+            sb.Append("  抽查帧（引擎自测的 frameTimeMs / sampleCount / maxDepth）：\n");
+            int step = Math.Max(1, count / 3);
+            for (int i = 0; i < 3; i++)
+            {
+                int f = last - i * step;
+                if (f < first) break;
+                var view = ProfilerApi.GetHierarchyView(f, 0);
+                if (view == null)
+                {
+                    sb.Append("    frame ").Append(f).Append("  取不到视图");
+                    if (!string.IsNullOrEmpty(ProfilerApi.LastHierarchyError))
+                        sb.Append("（").Append(ProfilerApi.LastHierarchyError).Append("）");
+                    sb.Append('\n');
+                    continue;
+                }
+
+                var msRaw = Reflect.Get(view, "frameTimeMs");
+                int samples, depth;
+                Reflect.TryGetInt(view, "sampleCount", out samples);
+                Reflect.TryGetInt(view, "maxDepth", out depth);
+                sb.Append("    frame ").Append(f).Append("  frameTimeMs=")
+                  .Append(msRaw == null ? "缺失" : Convert.ToDouble(msRaw).ToString("0.###"))
+                  .Append("  sampleCount=").Append(samples)
+                  .Append("  maxDepth=").Append(depth).Append('\n');
+            }
+
+            // 计数器序列（和 ProfilerRecorder 用的是同一套 category/name）
+            sb.Append("  计数器序列（GetCounterValuesBatchByCategory）：\n");
+            string[,] series =
+            {
+                { "Render", "Draw Calls Count" },
+                { "Render", "SetPass Calls Count" },
+                { "Render", "Triangles Count" },
+                { "Memory", "GC Allocated In Frame" },
+                { "Memory", "Total Used Memory" },
+                { "Memory", "Texture Memory" }
+            };
+            for (int i = 0; i < series.GetLength(0); i++)
+                ProbeSeries(sb, series[i, 0], series[i, 1], first, count);
+
+            // 面板图表属性（CPU 帧耗时之类的序列名在这里）
+            sb.Append("  面板图表属性（GetAllStatisticsProperties）：\n");
+            var props = Reflect.InvokeStatic(ProfilerApi.Driver, "GetAllStatisticsProperties") as string[];
+            if (props == null || props.Length == 0)
+            {
+                sb.Append("    取不到属性列表\n");
+            }
+            else
+            {
+                for (int i = 0; i < props.Length; i++)
+                {
+                    int id = 0;
+                    var idRaw = Reflect.InvokeStatic(ProfilerApi.Driver, "GetStatisticsIdentifier", props[i]);
+                    if (idRaw != null) { try { id = Convert.ToInt32(idRaw); } catch { } }
+                    sb.Append("    [").Append(id).Append("] ").Append(props[i])
+                      .Append("  ").Append(ReadStatisticsSample(props[i], first, count)).Append('\n');
+                }
+            }
+        }
+
+        /// <summary>读一段计数器序列，报告有效样本数与最新值；名字/类别不对时会直接说出来。</summary>
+        void ProbeSeries(StringBuilder sb, string category, string name, int first, int count)
+        {
+            string label = (category + " / " + name).PadRight(34);
+            if (ProfilerApi.Driver == null || count <= 0)
+            {
+                sb.Append("    ").Append(label).Append("无帧范围\n");
+                return;
+            }
+
+            var buffer = new float[count];
+            string error = CallWithBuffer("GetCounterValuesBatchByCategory", category, name, first, buffer);
+            if (error != null)
+            {
+                sb.Append("    ").Append(label).Append(error).Append('\n');
+                return;
+            }
+
+            int valid;
+            float latest;
+            Summarize(buffer, out valid, out latest);
+            sb.Append("    ").Append(label);
+            if (valid == 0) sb.Append("无有效样本（类别或名字不对？）");
+            else sb.Append("有效 ").Append(valid).Append('/').Append(count).Append("  最新 ").Append(latest.ToString("0.##"));
+            sb.Append('\n');
+        }
+
+        /// <summary>读一条统计序列的一个样本（确认属性名可用）。</summary>
+        static string ReadStatisticsSample(string property, int first, int count)
+        {
+            if (ProfilerApi.Driver == null || count <= 0) return "";
+            var idRaw = Reflect.InvokeStatic(ProfilerApi.Driver, "GetStatisticsIdentifier", property);
+            if (idRaw == null) return "";
+            int id;
+            try { id = Convert.ToInt32(idRaw); } catch { return ""; }
+            if (id == 0) return "（未注册）";
+
+            var buffer = new float[count];
+            string error = CallWithBuffer("GetStatisticsValues", id, null, first, buffer);
+            if (error != null) return error;
+
+            int valid;
+            float latest;
+            Summarize(buffer, out valid, out latest);
+            return valid == 0 ? "无有效样本" : ("有效 " + valid + "/" + count + "  最新 " + latest.ToString("0.##"));
+        }
+
+        /// <summary>
+        /// 这两种 API 的最后一个参数是 <c>ref Single maxValue</c>，
+        /// 走 <see cref=“Reflect”/> 的自动转换会丢掉回写，所以这里直招 MethodInfo.Invoke。
+        /// </summary>
+        static string CallWithBuffer(string method, object firstArg, object secondArg, int firstFrame, float[] buffer)
+        {
+            if (ProfilerApi.Driver == null) return "ProfilerDriver 缺失";
+
+            var methods = ProfilerApi.Driver.GetMethods(Reflect.StaticAll);
+            MethodInfo target = null;
+            for (int i = 0; i < methods.Length; i++)
+            {
+                var m = methods[i];
+                if (m.Name != method) continue;
+                var ps = m.GetParameters();
+                if (ps.Length != 5 && ps.Length != 6) continue;
+                if (ps[0].ParameterType != typeof(string) && ps[0].ParameterType != typeof(int)) continue;
+                if (ps[ps.Length - 2].ParameterType != typeof(float[])) continue;
+                target = m;
+                break;
+            }
+            if (target == null) return (method + " 重载不存在");
+
+            object[] args = target.GetParameters().Length == 6
+                ? new object[] { firstArg, secondArg, firstFrame, 1f, buffer, 0f }
+                : new object[] { firstArg, firstFrame, 1f, buffer, 0f };
+            try { target.Invoke(null, args); }
+            catch (Exception e) { return "调用异常 " + e.GetType().Name; }
+            return null;
+        }
+
+        static void Summarize(float[] buffer, out int valid, out float latest)
+        {
+            valid = 0;
+            latest = 0f;
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                if (buffer[i] <= 0f) continue;
+                valid++;
+                latest = buffer[i];
+            }
         }
 
         /// <summary>
