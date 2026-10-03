@@ -54,3 +54,8 @@ Thumbs.db
 
 # 本机备份
 manifest.json.bak
+
+# PerfAgent 的运行状态：快照 / 对话记录 / 修复日志 / 本机设置
+# 作者刻意把它放在 ProjectSettings/ 下就是为了避免误提交（见 PerfAgentSettings.cs 注释），
+# 这里显式忽略。这些都是跑一次就变的本机数据，且快照动辄几百 KB。
+/ProjectSettings/PerfAgent/

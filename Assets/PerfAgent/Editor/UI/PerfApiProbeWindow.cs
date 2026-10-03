@@ -22,7 +22,15 @@ namespace PerfAgent.UI
         Label _output;
         ScrollView _scroll;
 
-        [MenuItem("Tools/PerfAgent/API 探针", false, 200)]
+        /// <summary>
+        /// 打开 API 探针窗口。
+        ///
+        /// 这里刻意**不**加 [MenuItem]：菜单入口统一由 PerfAgentWindow 聚合
+        /// （Tools &gt; PerfAgent &gt; API 探针，优先级 103，和其他面板命令排在一起）。
+        /// 两处都写会触发 Unity 的
+        /// 「Cannot add menu item ... because a menu item with the same name already exists」
+        /// 警告，而且其中一个入口会被静默丢弃 —— 每次都刷一条 Console 噪音。
+        /// </summary>
         public static void Open()
         {
             var window = GetWindow<PerfApiProbeWindow>("PerfAgent API 探针");
