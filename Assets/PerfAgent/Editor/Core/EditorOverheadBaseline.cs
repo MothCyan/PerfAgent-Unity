@@ -1,9 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
-using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using PerfAgent.Collectors;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace PerfAgent.Core
 {
@@ -39,10 +40,10 @@ namespace PerfAgent.Core
 
         // 窗口宽一点：编辑模式下 EditorApplication.update 会被降频，
         // 窗口太短会「样本不足」而直接丢掉基线（实测就是这么丢的）。
-        const int TargetSamples = 20;
-        const int MinSamples = 5;
-        const int WarmupTicks = 3;
-        const double MaxSeconds = 1.5;
+        /// <summary>基线窗口：至少录到这么多帧就够，最多等 MaxMs 毫秒。</summary>
+        const int TargetFrames = 20;
+        const int MinFrames = 5;
+        const double MaxMs = 1500;
 
         /// <summary>基线值（B/帧）。NaN = 不可用。</summary>
         public static double BytesPerFrame = double.NaN;
@@ -106,8 +107,12 @@ namespace PerfAgent.Core
         }
 
         /// <summary>
-        /// 异步测一次基线；无论成功与否都会调用 onDone。测量本身不分配（固定数组 + 静态委托），
-        /// 否则量的就是自己。
+        /// 异步测一次基线；无论成功与否都会调用 onDone。
+        ///
+        /// 读数走 **Profiler 面板序列**（与采集数据同一口径），不再用 ProfilerRecorder ——
+        /// 因为「开启 Profiler 的同一瞬间」去建 ProfilerRecorder 时计数器会话还没建立，
+        /// 会立刻判定「取不到计数器」而误报失败（实测就是这个问题）。
+        /// 现在改成：开启记录 → 等面板真的录到几帧 → 读那几帧的分配序列取中位数。
         /// </summary>
         public static void Measure(Action onDone)
         {
@@ -140,74 +145,71 @@ namespace PerfAgent.Core
             bool profilerWasEnabled = ProfilerApi.Enabled;
             if (!profilerWasEnabled) ProfilerApi.Enabled = true;
 
-            var rec = StatRecorder.MakeFirstValid(ProfilerCategory.Memory, StatRecorder.GcAllocCounters);
-            var samples = new double[TargetSamples];
-            int n = 0;
-            int warmup = WarmupTicks;
-            double start = EditorApplication.timeSinceStartup;
+            // 从这里之后录进来的帧就是「编辑器空转」的帧
+            int startFrame = ProfilerApi.LastFrameIndex;
+            var clock = Stopwatch.StartNew();
 
             EditorApplication.CallbackFunction tick = null;
             tick = delegate
             {
-                bool finished = !rec.Valid
-                                || n >= TargetSamples
-                                || EditorApplication.timeSinceStartup - start > MaxSeconds;
+                int last = ProfilerApi.LastFrameIndex;
+                int count = (startFrame >= 0 && last > startFrame) ? last - startFrame : 0;
 
-                if (!finished)
-                {
-                    if (warmup > 0) warmup--;
-                    else
-                    {
-                        long v = StatRecorder.Last(rec);
-                        if (v > 0) samples[n++] = v;
-                    }
-                    return;
-                }
+                bool enough = count >= TargetFrames;
+                bool timeout = clock.Elapsed.TotalMilliseconds > MaxMs;
+                if (!enough && !timeout) return;
 
                 EditorApplication.update -= tick;
-                try { if (rec.Valid) rec.Dispose(); } catch { }
                 if (!profilerWasEnabled) ProfilerApi.Enabled = false;
 
-                if (!rec.Valid)
+                double median = 0;
+                int valid = 0;
+                string used = "";
+
+                if (count >= MinFrames)
                 {
-                    Reason = "本机取不到 GC Allocated In Frame 计数器，无法测编辑器开销基线";
-                }
-                else if (n < MinSamples)
-                {
-                    Reason = "编辑器空转期间只取到 " + n + " 个样本，不足以确定基线";
-                }
-                else
-                {
-                    double median = Median(samples, n);
-                    if (median > 0)
+                    var values = new float[count];
+                    for (int i = 0; i < StatRecorder.GcAllocCounters.Length && median <= 0; i++)
                     {
-                        BytesPerFrame = median;
-                        Samples = n;
-                        Reason = "";
-                        try
-                        {
-                            SessionState.SetFloat(ValueKey, (float)median);
-                            SessionState.SetBool(ValidKey, true);
-                            SessionState.SetInt(SamplesKey, n);
-                            SessionState.SetString(ReasonKey, "");
-                        }
-                        catch { }
-                    }
-                    else
-                    {
-                        Reason = "编辑器空转期间的分配样本全为 0，基线不可用";
+                        if (!ProfilerApi.ReadCounterSeries("Memory", StatRecorder.GcAllocCounters[i], startFrame + 1, values))
+                            continue;
+
+                        var samples = new List<double>(count);
+                        for (int k = 0; k < count; k++)
+                            if (values[k] > 0f) samples.Add(values[k]);
+                        if (samples.Count < MinFrames) continue;
+
+                        samples.Sort();
+                        median = samples[samples.Count / 2];
+                        valid = samples.Count;
+                        used = StatRecorder.GcAllocCounters[i];
                     }
                 }
 
-                if (!string.IsNullOrEmpty(Reason))
+                if (median > 0)
                 {
-                    try { SessionState.SetString(ReasonKey, Reason); } catch { }
-                    Debug.LogWarning("[PerfAgent] 编辑器开销基线测量失败：" + Reason);
+                    BytesPerFrame = median;
+                    Samples = valid;
+                    Reason = "";
+                    try
+                    {
+                        SessionState.SetFloat(ValueKey, (float)median);
+                        SessionState.SetBool(ValidKey, true);
+                        SessionState.SetInt(SamplesKey, valid);
+                        SessionState.SetString(ReasonKey, "");
+                    }
+                    catch { }
+
+                    Debug.Log("[PerfAgent] 编辑器开销基线 = " + ((long)median).ToString(CultureInfo.InvariantCulture)
+                              + " B/帧（面板序列 Memory/" + used + "，" + valid + " 帧的中位数）。采集时会从「每帧托管分配」里扣掉它。");
                 }
                 else
                 {
-                    Debug.Log("[PerfAgent] 编辑器开销基线 = " + ((long)BytesPerFrame).ToString(CultureInfo.InvariantCulture)
-                              + " B/帧（" + Samples + " 个样本）。采集时会从「每帧托管分配」里扣掉它。");
+                    Reason = count < MinFrames
+                        ? ("编辑器空转期间面板只录到 " + count + " 帧（不足 " + MinFrames + " 帧）")
+                        : "面板的 Memory/GC Allocated In Frame 序列在编辑器空转期间没有有效样本";
+                    try { SessionState.SetString(ReasonKey, Reason); } catch { }
+                    Debug.LogWarning("[PerfAgent] 编辑器开销基线测量失败：" + Reason);
                 }
 
                 Measuring = false;
@@ -215,15 +217,6 @@ namespace PerfAgent.Core
             };
 
             EditorApplication.update += tick;
-        }
-
-        static double Median(double[] values, int count)
-        {
-            if (count <= 0) return double.NaN;
-            var copy = new double[count];
-            Array.Copy(values, copy, count);
-            Array.Sort(copy);
-            return count % 2 == 1 ? copy[count / 2] : (copy[count / 2 - 1] + copy[count / 2]) * 0.5;
         }
     }
 }
