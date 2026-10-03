@@ -59,7 +59,8 @@ namespace PerfAgent.McpForUnity
             {
                 if (PerfSession.Current == null)
                 {
-                    error = "当前没有快照。先调用 perf_static_audit（秒级）或 perf_capture_start 采集，"
+                    error = "当前没有快照。先调用 perf_static_audit（秒级、不进 Play），"
+                          + "或让用户用面板的「跟随采集」跑一段自己操作的过程，"
                           + "或用 perf_list_snapshots 选一份历史快照。";
                     return null;
                 }
@@ -108,23 +109,9 @@ namespace PerfAgent.McpForUnity
         }
 
         /// <summary>任务的事件流水，转成可序列化的列表。</summary>
-        public static List<object> EventList(PlayModeTestJob job)
-        {
-            var list = new List<object>();
-            if (job == null) return list;
-
-            var events = job.Events;
-            for (int i = 0; i < events.Count; i++) list.Add(events[i]);
-            return list;
-        }
-
+  
         /// <summary>面板里设的默认采集时长（秒）；0 表示默认按帧数。</summary>
-        public static int DefaultCaptureSeconds()
-        {
-            double seconds = PerfAgentSettings.Config.budget.captureSeconds;
-            return seconds > 0 ? (int)Math.Min(seconds, PerfPipeline.MaxCaptureSeconds) : 0;
-        }
-
+  
         public static object Brief(PerfSnapshot s)
         {
             return new
@@ -380,194 +367,89 @@ namespace PerfAgent.McpForUnity
     }
 
     // =========================================================================
-    // 自动走游戏循环并采集性能
+    // 跟随采集：用户自己操作，工具在旁边记录
     //
-    // 这几个工具是桥接层里唯一会让编辑器发生「状态迁移」的入口（进 / 出 Play 模式），
-    // 所以刻意拆成 start + status + result + cancel 四段：
-    //   1. 流程要穿过两次域重载，MCP 连接会被切断，单次调用不可能阻塞等待；
-    //   2. 状态全部落在 ProjectSettings/PerfAgent/PlayModeRuns，外部可以反复查询；
-    //   3. 出问题时能单独取消，不让编辑器卡在 Play 模式里出不来。
-    // 与抓帧工具一样：这里只负责「测量」，不含任何修改工程资源的动作。
+    // 这是本工具集里**唯一**能拿到运行时数据的入口，而且它不碰 Play 模式：
+    // 用户自己进、自己玩、自己退，时长不限。
+    //
+    // 外部 Agent 的正确用法：调 start 进入待命 → **提示用户去操作**（不要替他按 Play）
+    // → 轮询 status → 用户玩完后再调 stop。
     // =========================================================================
 
-    [McpForUnityTool("perf_playmode_test_start",
-        Description = "启动**自动** Play 模式性能测试：进入 Play → 丢弃启动抖动帧 → 采集指定时长 → " +
-                      "退出 Play → 出快照。全程由工具控制 Play 模式，你不要手动操作。\n" +
-                      "只想静态看看工程/资源/代码问题的话，用 perf_static_audit（秒级、不进 Play）。\n" +
-                      "本工具立即返回 job_id（不阻塞），用 perf_playmode_test_status 查进度、" +
-                      "perf_playmode_test_result 取结论。",
+    [McpForUnityTool("perf_follow_capture_start",
+        Description = "进入「跟随采集」待命：**用户自己进 Play 操作，工具在旁边记录，时长不限**。\n" +
+                      "本工具**不会**替你进 Play —— 它是给人用的模式。调用后应当让用户自己去玩，" +
+                      "玩完再调 perf_follow_capture_stop 收尾。用户已经在 Play 里的话会立刻开始采集。",
         Group = "core")]
-    public static class PerfPlayModeTestStart
+    public static class PerfFollowCaptureStart
     {
         public static object HandleCommand(JObject @params)
         {
-            var job = new PlayModeTestJob();
-            job.captureFrames = McpToolkit.Int(@params, "frames", PerfAgentSettings.Config.budget.captureFrames);
-            job.warmupFrames = McpToolkit.Int(@params, "warmup_frames", 60);
-            job.scenePath = McpToolkit.Str(@params, "scene");
-            job.label = McpToolkit.Str(@params, "label");
-            job.setupMethod = McpToolkit.Str(@params, "setup_method");
-            job.restoreScene = McpToolkit.Bool(@params, "restore_scene", true);
+            string error;
+            if (!FollowCapture.Arm(out error)) return new ErrorResponse(error);
 
-            // duration_seconds > 0 → 按时长采集，frames 退化为安全上限。
-            // 「跑完一整个流程」是按秒描述的；而且时长模式下实际帧数由帧率决定，
-            // 所以兜底超时也得跟着放宽，否则会在流程中途被打断。
-            int seconds = McpToolkit.Int(@params, "duration_seconds", 0);
-            if (seconds <= 0) seconds = McpToolkit.DefaultCaptureSeconds();
-            job.durationSeconds = seconds > 0 ? Math.Min((double)seconds, PerfPipeline.MaxCaptureSeconds) : 0;
+            return new SuccessResponse(
+                "跟随采集已就绪。请让用户进入 Play 模式自己操作 —— 进去后会自动开始记录；"
+                + "用户玩完退出 Play，或调用 perf_follow_capture_stop，即会生成快照。",
+                new
+                {
+                    armed = FollowCapture.Armed,
+                    capturing = FollowCapture.Capturing,
+                    hint = "不要替用户按 Play，让他自己操作。",
+                });
+        }
+    }
 
-            job.timeoutSeconds = McpToolkit.Int(@params, "timeout_seconds", 0);
-            if (job.timeoutSeconds <= 0)
-                job.timeoutSeconds = job.durationSeconds > 0 ? (job.durationSeconds + 180) : 240;
+    [McpForUnityTool("perf_follow_capture_status",
+        Description = "查询跟随采集状态：是否待命、是否在采、已记录多少帧、最近一份快照 id。",
+        Group = "core")]
+    public static class PerfFollowCaptureStatus
+    {
+        public static object HandleCommand(JObject @params)
+        {
+            bool capturing = FollowCapture.Capturing;
+            bool armed = FollowCapture.Armed;
+
+            return new SuccessResponse(
+                capturing
+                    ? ("跟随采集中：已记录 " + FollowCapture.CapturedFrames + " 帧。")
+                    : (armed ? "跟随采集待命中：等用户进入 Play 模式。" : "当前没有进行中的跟随采集。"),
+                new
+                {
+                    capturing = capturing,
+                    armed = armed,
+                    captured_frames = FollowCapture.CapturedFrames,
+                    last_snapshot_id = string.IsNullOrEmpty(FollowCapture.LastSnapshotId)
+                        ? null : FollowCapture.LastSnapshotId,
+                });
+        }
+    }
+
+    [McpForUnityTool("perf_follow_capture_stop",
+        Description = "结束跟随采集并生成快照。**不会退出 Play 模式** —— 用户想接着玩就接着玩。\n" +
+                      "返回快照 id，用 perf_get_findings / perf_get_metrics 取结论。",
+        Group = "core")]
+    public static class PerfFollowCaptureStop
+    {
+        public static object HandleCommand(JObject @params)
+        {
+            int captured = FollowCapture.CapturedFrames;
 
             string error;
-            var started = PlayModeTestRunner.Start(job, out error);
-            if (started == null) return new ErrorResponse(error);
+            if (!FollowCapture.Stop(out error)) return new ErrorResponse(error);
+
+            string id = FollowCapture.LastSnapshotId;
 
             return new SuccessResponse(
-                "已启动自动 Play 模式测试（" + started.id + "）：预热 " + started.warmupFrames
-                + " 帧，再" + (started.durationSeconds > 0
-                    ? string.Format(CultureInfo.InvariantCulture, "连续采集 {0:0.#} 秒", started.durationSeconds)
-                    : ("采样 " + started.captureFrames + " 帧"))
-                + "。整体超时上限 " + started.timeoutSeconds.ToString("0", CultureInfo.InvariantCulture) + " 秒。",
+                string.IsNullOrEmpty(id)
+                    ? "已取消跟随采集（还没有开始记录）。"
+                    : ("跟随采集已结束，快照 " + id + " 已生成（共 " + captured + " 帧）。"),
                 new
                 {
-                    job_id = started.id,
-                    warmup_frames = started.warmupFrames,
-                    capture_frames = started.captureFrames,
-                    duration_seconds = started.durationSeconds,
-                    timeout_seconds = started.timeoutSeconds,
-                    scene = string.IsNullOrEmpty(started.scenePath) ? "(当前场景)" : started.scenePath,
-                    setup_method = string.IsNullOrEmpty(started.setupMethod) ? null : started.setupMethod,
-                    hint = "用 perf_playmode_test_status 轮询（建议每 2~3 秒一次）。",
+                    cancelled = string.IsNullOrEmpty(id),
+                    snapshot_id = string.IsNullOrEmpty(id) ? null : id,
+                    captured_frames = captured,
                 });
-        }
-    }
-
-    [McpForUnityTool("perf_playmode_test_status",
-        Description = "查询自动 Play 模式测试的进度：阶段、已采样帧数、百分比、耗时、事件流水。" +
-                      "phase=succeeded 时用 perf_playmode_test_result 取结论。不传 job_id 时查最近一次。",
-        Group = "core")]
-    public static class PerfPlayModeTestStatus
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            string id = McpToolkit.Str(@params, "job_id");
-            var job = string.IsNullOrEmpty(id)
-                ? PlayModeTestRunner.LoadCurrent()
-                : PlayModeTestRunner.LoadById(id);
-
-            if (job == null)
-            {
-                return new SuccessResponse("没有找到该任务。", new
-                {
-                    found = false,
-                    job_id = id,
-                    running = false,
-                    hint = "用 perf_playmode_test_start 启动一次自动测试。",
-                });
-            }
-
-            return new SuccessResponse(
-                "阶段：" + job.PhaseText() + "（已采样 " + job.capturedFrames + "/" + job.captureFrames + " 帧）",
-                new
-                {
-                    found = true,
-                    job_id = job.id,
-                    running = job.IsActive(),
-                    phase = job.phase.ToString().ToLowerInvariant(),
-                    phase_text = job.PhaseText(),
-                    progress = Math.Round(job.Progress(), 3),
-                    captured_frames = job.capturedFrames,
-                    capture_frames = job.captureFrames,
-                    warmup_frames = job.warmupFrames,
-                    elapsed_seconds = Math.Round(job.ElapsedSeconds(), 1),
-                    snapshot_id = string.IsNullOrEmpty(job.snapshotId) ? null : job.snapshotId,
-                    error = string.IsNullOrEmpty(job.error) ? null : job.error,
-                    events = McpToolkit.EventList(job),
-                });
-        }
-    }
-
-    [McpForUnityTool("perf_playmode_test_result",
-        Description = "取自动 Play 模式测试的结论：性能指标、findings、是否需要修复计划。" +
-                      "不传 job_id 时取最近一次；任务未完成会返回明确错误而不是空数据。",
-        Group = "core")]
-    public static class PerfPlayModeTestResult
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            string id = McpToolkit.Str(@params, "job_id");
-            var job = string.IsNullOrEmpty(id)
-                ? PlayModeTestRunner.LoadCurrent()
-                : PlayModeTestRunner.LoadById(id);
-
-            if (job == null) return new ErrorResponse("没有找到该任务。先用 perf_playmode_test_status 查看。");
-
-            if (job.IsActive())
-                return new ErrorResponse("任务还在进行中（" + job.PhaseText() + "，已采样 "
-                    + job.capturedFrames + "/" + job.captureFrames + " 帧）。稍后再取结果。");
-
-            if (job.phase != PlayModeTestPhase.Succeeded || string.IsNullOrEmpty(job.snapshotId))
-                return new ErrorResponse("任务未成功完成：" + job.PhaseText()
-                    + (string.IsNullOrEmpty(job.error) ? "。" : " —— " + job.error));
-
-            string snapPath;
-            var snap = McpToolkit.LoadSnapshotById(job.snapshotId, out snapPath);
-            if (snap == null) return new ErrorResponse("任务记录的快照文件读不到：" + job.snapshotId);
-
-            var metrics = new List<object>();
-            for (int i = 0; i < snap.metrics.Count; i++)
-            {
-                var m = snap.metrics[i];
-                metrics.Add(new
-                {
-                    name = m.name,
-                    value = m.value,
-                    unit = m.unit,
-                    budget = string.IsNullOrEmpty(m.budget) ? null : m.budget,
-                    severity = m.severity,
-                    samples = m.samples,
-                    source = m.source,
-                });
-            }
-
-            var findings = new List<object>();
-            for (int i = 0; i < snap.findings.Count; i++)
-                findings.Add(McpToolkit.Finding(snap.findings[i], true));
-
-            return new SuccessResponse(
-                "自动 Play 模式测试完成（" + job.id + "）：采样 " + job.capturedFrames + " 帧，"
-                + findings.Count + " 条结论。",
-                new
-                {
-                    job = job.ToDict(),
-                    snapshot = McpToolkit.Brief(snap),
-                    metrics = metrics,
-                    findings = findings,
-                    notes = snap.notes,
-                    next_step = findings.Count == 0
-                        ? "本次没发现超预算项。"
-                        : "用 perf_get_fix_plan 取修复计划（执行入口只在 Unity 面板里）。",
-                });
-        }
-    }
-
-    [McpForUnityTool("perf_playmode_test_cancel",
-        Description = "取消进行中的自动 Play 模式测试并退出 Play 模式。该次采样数据不会保留。" +
-                      "另有兜底超时：即使不调用本工具，卡住的流程也会被强制中止。",
-        Group = "core")]
-    public static class PerfPlayModeTestCancel
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            string reason = McpToolkit.Str(@params, "reason", "调用方主动取消。");
-
-            string error;
-            if (!PlayModeTestRunner.Cancel(reason, out error)) return new ErrorResponse(error);
-
-            return new SuccessResponse("已取消自动测试，正在退出 Play 模式。",
-                new { cancelled = true, reason = reason });
         }
     }
 }

@@ -12,17 +12,6 @@ namespace PerfAgent.Core
     /// </summary>
     public static class PerfPipeline
     {
-        /// <summary>
-        /// 单次分析的帧数上限。
-        ///
-        /// 真正的上限是 **Profiler 面板自己的帧历史长度**（默认约两千帧，可在 Profiler 窗口设置），
-        /// 超出部分会被面板丢弃 —— 这里只是一个不让自己录得太久的安全阀。
-        /// </summary>
-        public const int MaxCaptureFrames = 20000;
-
-        /// <summary>单次采集的时长上限（秒）—— 1 小时。</summary>
-        public const double MaxCaptureSeconds = 3600;
-
         public static PerfSnapshot CreateSnapshot(string label = null)
         {
             var snap = new PerfSnapshot();

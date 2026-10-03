@@ -286,7 +286,8 @@ namespace PerfAgent.Core
                 if (IsPackageRegistered(pending))
                 {
                     Debug.Log("[PerfAgent] MCP 集成已生效（" + pending + "）。暴露的工具：" +
-                              "perf_list_snapshots / perf_capture_start / perf_capture_status / perf_static_audit / " +
+                              "perf_list_snapshots / perf_static_audit / perf_follow_capture_start / " +
+                              "perf_follow_capture_status / perf_follow_capture_stop / " +
                               "perf_get_findings / perf_get_metrics / perf_get_fix_plan。" +
                               "重启 MCP 服务器或重连客户端后即可看到。");
                 }
@@ -326,8 +327,9 @@ namespace PerfAgent.Core
                 sb.Append("暴露的工具（全部只读或触发分析，没有执行修复的入口）：\n");
                 sb.Append("  perf_list_snapshots   列快照\n");
                 sb.Append("  perf_static_audit     静态审计（秒级）\n");
-                sb.Append("  perf_capture_start    开始抓帧\n");
-                sb.Append("  perf_capture_status   查抓帧进度\n");
+                sb.Append("  perf_follow_capture_start   进入跟随采集待命（你自己进 Play 操作）\n");
+                sb.Append("  perf_follow_capture_status  查跟随采集进度\n");
+                sb.Append("  perf_follow_capture_stop    结束采集并出快照\n");
                 sb.Append("  perf_get_findings     取结论 + 证据链\n");
                 sb.Append("  perf_get_metrics      取指标 + 数据来源\n");
                 sb.Append("  perf_get_fix_plan     取一键修复计划\n\n");

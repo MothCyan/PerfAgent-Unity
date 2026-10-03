@@ -28,17 +28,9 @@ namespace PerfAgent.Core
         public long maxTempAllocatorMB = 64;
         public int maxAudioSourceCount = 24;
 
-        [Header("采集")]
-        public int captureFrames = 300;      // 每次抓帧采样帧数（时长模式下退化为安全上限）
-
+        [Header("快照")]
         /// <summary>快照保留个数：超过后删最旧的（0 = 不清理）。</summary>
         public int keepSnapshots = 20;
-
-        /// <summary>
-        /// >0 表示按**时长**采集（秒），此时 captureFrames 变成安全上限。
-        /// 「走完一整个游戏流程」是按秒描述的 —— 用帧数说既不准也难换算。
-        /// </summary>
-        public double captureSeconds = 0;
 
         public double FrameBudgetMs()
         {

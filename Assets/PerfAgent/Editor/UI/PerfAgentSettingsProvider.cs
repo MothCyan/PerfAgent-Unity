@@ -40,7 +40,6 @@ namespace PerfAgent.UI
             cfg.budget.maxTempAllocatorMB = EditorGUILayout.LongField("TempAllocator 预算 (MB)", cfg.budget.maxTempAllocatorMB);
             cfg.budget.maxRealtimeShadowLights = EditorGUILayout.IntField("实时阴影方向光上限", cfg.budget.maxRealtimeShadowLights);
             cfg.budget.maxAudioSourceCount = EditorGUILayout.IntField("AudioSource 数量上限", cfg.budget.maxAudioSourceCount);
-            cfg.budget.captureFrames = EditorGUILayout.IntField("默认记录帧数", cfg.budget.captureFrames);
             EditorGUI.indentLevel--;
 
             EditorGUILayout.Space(10);

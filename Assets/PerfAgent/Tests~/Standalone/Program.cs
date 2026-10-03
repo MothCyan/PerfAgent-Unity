@@ -47,12 +47,6 @@ namespace PerfAgent.RuleRegression
                 RecorderGcAllocIsPreferredWhenAvailable,
                 MissingRecorderGcAllocDegradesExplicitly,
                 EndpointUrlIsNormalizedBeforeRequest,
-                PlayModeTestJobRoundTripsThroughJson,
-                PlayModeTestJobClassifiesPhases,
-                PlayModeTestJobProgressReflectsPhase,
-                PlayModeTestSetupMethodIsParsedSafely,
-                PlayModeTestEventLogIsBounded,
-                PlayModeTestUnknownPhaseFallsBackToNone,
                 SceneFindingsHaveExecutableFixes,
                 DrawCallFindingOffersAtlasFix,
                 CodeFindingsExposeNoAutoFix,
@@ -61,7 +55,6 @@ namespace PerfAgent.RuleRegression
                 SlowFramesWithAllocationSpikeAreAttributed,
                 AbsurdFrameTimeIsRejectedInsteadOfReported,
                 FrameDownsamplePreservesShapeAndBounds,
-                PlayModeTestJobProgressHandlesDurationMode,
                 ToolResultFolderFoldsWithoutBreakingPairs,
                 CodePatternIsParsedBeforeMatching,
                 ColumnLayoutDetectsUnity2022HierarchyColumns,
@@ -622,142 +615,10 @@ namespace PerfAgent.RuleRegression
         // 这批用倒重点不是业务逻辑，而是「跨域重载能不能活下来」——
         // 任务状态必须能无损地写成 JSON 再读回来，所以每个字段都要验。
         // =====================================================================
-        static void PlayModeTestJobRoundTripsThroughJson()
-        {
-            var job = new PlayModeTestJob();
-            job.id = "PM20260920_101500";
-            job.label = "主城跑图";
-            job.scenePath = "Assets/Scenes/City.unity";
-            job.warmupFrames = 90;
-            job.captureFrames = 600;
-            job.timeoutSeconds = 300;
-            job.setupMethod = "Night.AutoPlay.Start";
-            job.restoreScene = false;
-            job.phase = PlayModeTestPhase.Capturing;
-            job.capturedFrames = 123;
-            job.snapshotId = "20260920_101530";
-            job.snapshotPath = "C:/p/20260920_101530.json";
-            job.previousScenePath = "Assets/Scenes/Main.unity";
-            job.AddEvent("已进入 Play 模式");
+  
 
-            var parsed = PlayModeTestJob.Parse(job.ToJson());
 
-            True(parsed != null, "job must survive a json round trip");
-            Equal("PM20260920_101500", parsed.id, "id");
-            Equal("主城跑图", parsed.label, "label");
-            Equal("Assets/Scenes/City.unity", parsed.scenePath, "scene path");
-            Equal(90, parsed.warmupFrames, "warmup frames");
-            Equal(600, parsed.captureFrames, "capture frames");
-            Equal(300.0, parsed.timeoutSeconds, "timeout seconds");
-            Equal("Night.AutoPlay.Start", parsed.setupMethod, "setup method");
-            True(!parsed.restoreScene, "restore flag must survive");
-            True(parsed.phase == PlayModeTestPhase.Capturing, "phase must survive");
-            Equal(123, parsed.capturedFrames, "captured frames");
-            Equal("20260920_101530", parsed.snapshotId, "snapshot id");
-            Equal("C:/p/20260920_101530.json", parsed.snapshotPath, "snapshot path");
-            Equal("Assets/Scenes/Main.unity", parsed.previousScenePath, "previous scene");
-            Equal(1, parsed.Events.Count, "events must survive");
-        }
 
-        static void PlayModeTestJobClassifiesPhases()
-        {
-            var job = new PlayModeTestJob();
-
-            job.phase = PlayModeTestPhase.Entering;
-            True(job.IsActive() && !job.IsTerminal(), "entering is active, not terminal");
-
-            job.phase = PlayModeTestPhase.Warming;
-            True(job.IsActive() && !job.IsTerminal(), "warming is active, not terminal");
-
-            job.phase = PlayModeTestPhase.Capturing;
-            True(job.IsActive() && !job.IsTerminal(), "capturing is active, not terminal");
-
-            job.phase = PlayModeTestPhase.Finalizing;
-            True(job.IsActive() && !job.IsTerminal(), "finalizing is still active");
-
-            job.phase = PlayModeTestPhase.Succeeded;
-            True(!job.IsActive() && job.IsTerminal(), "succeeded is terminal");
-
-            job.phase = PlayModeTestPhase.Failed;
-            True(!job.IsActive() && job.IsTerminal(), "failed is terminal");
-
-            job.phase = PlayModeTestPhase.Cancelled;
-            True(!job.IsActive() && job.IsTerminal(), "cancelled is terminal");
-
-            job.phase = PlayModeTestPhase.None;
-            True(!job.IsActive() && !job.IsTerminal(), "none is neither active nor terminal");
-        }
-
-        static void PlayModeTestJobProgressReflectsPhase()
-        {
-            var job = new PlayModeTestJob();
-            job.warmupFrames = 100;
-            job.captureFrames = 100;
-
-            Equal(0.0, job.Progress(), "not started yet");
-
-            job.phase = PlayModeTestPhase.Warming;
-            Equal(0.0, job.Progress(), "warming alone does not advance progress");
-
-            job.phase = PlayModeTestPhase.Capturing;
-            job.capturedFrames = 50;
-            Equal(0.75, job.Progress(), "warmup + half of capture");
-
-            job.capturedFrames = 100;
-            Equal(0.99, job.Progress(), "capturing is capped just below 1");
-
-            job.phase = PlayModeTestPhase.Finalizing;
-            Equal(1.0, job.Progress(), "finalizing counts as done");
-
-            job.phase = PlayModeTestPhase.Succeeded;
-            Equal(1.0, job.Progress(), "succeeded counts as done");
-        }
-
-        static void PlayModeTestSetupMethodIsParsedSafely()
-        {
-            string type, method;
-
-            True(PlayModeTestJob.SplitSetupMethod("Night.AutoPlay.Start", out type, out method), "plain form");
-            Equal("Night.AutoPlay", type, "type from plain form");
-            Equal("Start", method, "method from plain form");
-
-            True(PlayModeTestJob.SplitSetupMethod("Night.AutoPlay.Start()", out type, out method), "form with parens");
-            Equal("Night.AutoPlay", type, "type from form with parens");
-            Equal("Start", method, "method from form with parens");
-
-            True(PlayModeTestJob.SplitSetupMethod("  Game.Boot  ", out type, out method), "surrounding whitespace");
-            Equal("Game", type, "trimmed type");
-            Equal("Boot", method, "trimmed method");
-
-            // 非法输入必须被拒绕，而不是拼出一个怪类型名再拿去反射
-            True(!PlayModeTestJob.SplitSetupMethod("NoDot", out type, out method), "no dot must be rejected");
-            True(!PlayModeTestJob.SplitSetupMethod("Trailing.", out type, out method), "trailing dot must be rejected");
-            True(!PlayModeTestJob.SplitSetupMethod(".Leading", out type, out method), "leading dot must be rejected");
-            True(!PlayModeTestJob.SplitSetupMethod("", out type, out method), "empty must be rejected");
-            True(!PlayModeTestJob.SplitSetupMethod(null, out type, out method), "null must be rejected");
-        }
-
-        static void PlayModeTestEventLogIsBounded()
-        {
-            var job = new PlayModeTestJob();
-            for (int i = 0; i < 60; i++) job.AddEvent("e" + i);
-
-            Equal(40, job.Events.Count, "event log must be capped so the state file cannot grow forever");
-            True(job.Events[job.Events.Count - 1].EndsWith("e59"), "the newest event must be the one kept");
-        }
-
-        static void PlayModeTestUnknownPhaseFallsBackToNone()
-        {
-            // 未来版本可能新增阶段；旧代码读到未知值不能直接崩或者当成进行中
-            var job = PlayModeTestJob.Parse("{\"id\":\"x\",\"phase\":\"SomethingNew\"}");
-            True(job != null, "job must still parse");
-            True(job.phase == PlayModeTestPhase.None, "unknown phase must degrade to None");
-
-            // 缺字段时要落回默认值，而不是 0 —— 否则采样帧数会变成 0 直接卡死流程
-            Equal(300, job.captureFrames, "missing capture frames must fall back to default");
-            Equal(60, job.warmupFrames, "missing warmup frames must fall back to default");
-            True(job.restoreScene, "missing restore flag must fall back to true");
-        }
 
         // =====================================================================
         // 「每种错误都要有自动优化」—— 这条断言就是那个需求的回归锁
@@ -851,32 +712,6 @@ namespace PerfAgent.RuleRegression
             Equal(20000, FrameStats.Downsample(longList, 0).Count, "max=0 时应原样返回");
             Equal(20000, FrameStats.Downsample(longList, -1).Count, "max 为负时应原样返回");
             True(FrameStats.Downsample(null, 100) == null, "null 应安全返回");
-        }
-
-        static void PlayModeTestJobProgressHandlesDurationMode()
-        {
-            var job = new PlayModeTestJob();
-            job.warmupFrames = 60;
-            job.captureFrames = 100000;
-            job.durationSeconds = 120;
-            job.phase = PlayModeTestPhase.Capturing;
-
-            // 刚开采样：进度应落在采样段起点附近，而不是 0（那会让人以为没动）
-            job.captureStartedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            double p = job.Progress();
-            True(p >= 0.1 && p < 0.3, "刚开采样时进度应在采样段起点附近，实际 " + p.ToString("0.###"));
-
-            // 过了一半时长
-            job.captureStartedUtc = DateTime.UtcNow.AddSeconds(-60).ToString("o", CultureInfo.InvariantCulture);
-            p = job.Progress();
-            True(p > 0.4 && p < 0.7, "过一半时长时进度应在中段，实际 " + p.ToString("0.###"));
-
-            // 超过时长但还没收尾：不能报 100%，否则界面会显示已完成而实际还在跑
-            job.captureStartedUtc = DateTime.UtcNow.AddSeconds(-500).ToString("o", CultureInfo.InvariantCulture);
-            Equal(0.99, job.Progress(), "采样阶段进度封顶 0.99");
-
-            job.phase = PlayModeTestPhase.Finalizing;
-            Equal(1.0, job.Progress(), "收尾阶段算完成");
         }
 
         static void ToolResultFolderFoldsWithoutBreakingPairs()

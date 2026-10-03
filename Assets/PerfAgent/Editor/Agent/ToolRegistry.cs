@@ -672,7 +672,6 @@ namespace PerfAgent.Agent
             r["max_temp_allocator_mb"] = b.maxTempAllocatorMB;
             r["max_realtime_shadow_lights"] = b.maxRealtimeShadowLights;
             r["max_audio_source_count"] = b.maxAudioSourceCount;
-            r["capture_frames"] = b.captureFrames;
             return r;
         }
 
