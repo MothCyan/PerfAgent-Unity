@@ -63,60 +63,6 @@ namespace PerfAgent.Core
             return findings;
         }
 
-        /// <summary>采集 N 帧（异步，需要真实时间流逝），完成后回调。</summary>
-        public static PanelCapture CaptureFrames(int frames, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
-        {
-            var snap = CreateSnapshot(label);
-            var capture = new PanelCapture(frames, Finisher(snap, onDone), onProgress);
-            BeginAfterBaseline(capture);
-            return capture;
-        }
-
-        /// <summary>
-        /// 按**时长**采集（秒）。maxFrames 只是安全上限。
-        ///
-        /// 用于「跑完一整个游戏流程」这类需求：流程长度是以秒描述的，
-        /// 用帧数描述既不准（帧率变了就不是同一段时间）也难算。
-        /// </summary>
-        public static PanelCapture CaptureFrames(int maxFrames, double seconds, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
-        {
-            var snap = CreateSnapshot(label);
-
-            snap.AddNote(string.Format(CultureInfo.InvariantCulture,
-                "本次为按时长采集：目标 {0:0.#} 秒（安全上限 {1} 帧）。时长模式下帧数由实际帧率决定，不固定。",
-                seconds, maxFrames));
-
-            var capture = new PanelCapture(maxFrames, seconds, Finisher(snap, onDone), onProgress);
-            BeginAfterBaseline(capture);
-            return capture;
-        }
-
-        /// <summary>
-        /// 抓帧前先把「编辑器空闲开销基线」量出来。
-        ///
-        /// 不量的话，「每帧托管分配」里编辑器自身的开销会被算到项目头上 ——
-        /// 一个空工程也能报出上百 KB/帧（实测同一空工程两次采集差 6 倍，差的就是编辑器状态）。
-        /// 已经在 Play 里时测不到基线，直接开始并如实降级：本次不对该指标下结论。
-        /// 注意返回的 handle 仍然是立即可用的，只是 Start 会晚 ~0.4 秒。
-        /// </summary>
-        static void BeginAfterBaseline(PanelCapture capture)
-        {
-            double value;
-            string why;
-            if (!EditorOverheadBaseline.TryGet(out value, out why) && !UnityEditor.EditorApplication.isPlaying)
-            {
-                EditorOverheadBaseline.Measure(delegate
-                {
-                    PerfSession.Capturing = true;
-                    capture.Start();
-                });
-                return;
-            }
-
-            PerfSession.Capturing = true;
-            capture.Start();
-        }
-
         /// <summary>采集结束后的统一收尾：汇总 → 跑采集器 → 分析 → 落盘 → 设为当前快照。</summary>
         static Action<PanelCaptureData> Finisher(PerfSnapshot snap, Action<PerfSnapshot> onDone)
         {

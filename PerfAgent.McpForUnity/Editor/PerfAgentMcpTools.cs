@@ -184,40 +184,6 @@ namespace PerfAgent.McpForUnity
         }
     }
 
-    /// <summary>抓帧作业状态。域重载会重置，此时也会同步丢失 PerfSession.Capturing。</summary>
-    internal static class PerfCaptureJob
-    {
-        public static bool Running;
-        public static float Progress;
-        public static int TargetFrames;
-        /// <summary>>0 表示按时长采集，此时 TargetFrames 只是安全上限。</summary>
-        public static double DurationSeconds;
-        public static string StartedUtc = "";
-        public static string FinishedUtc = "";
-        public static string SnapshotId = "";
-        public static string LastError = "";
-
-        public static void Begin(int frames, double seconds)
-        {
-            Running = true;
-            Progress = 0f;
-            TargetFrames = frames;
-            DurationSeconds = seconds;
-            StartedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            FinishedUtc = "";
-            SnapshotId = "";
-            LastError = "";
-        }
-
-        public static void Complete(PerfSnapshot snapshot)
-        {
-            Running = false;
-            Progress = 1f;
-            FinishedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-            SnapshotId = snapshot == null ? "" : snapshot.id;
-        }
-    }
-
     // =========================================================================
     // 只读工具
     // =========================================================================
@@ -413,120 +379,6 @@ namespace PerfAgent.McpForUnity
         }
     }
 
-    [McpForUnityTool("perf_capture_start",
-        Description = "开始抓帧采集（会真实占用编辑器若干秒，帧数越多越久）。" +
-                      "本工具立即返回，抓帧在编辑器主循环里进行；用 perf_capture_status 查进度与结果。",
-        Group = "core")]
-    public static class PerfCaptureStart
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            if (PerfSession.Capturing || PerfCaptureJob.Running)
-                return new ErrorResponse("已有抓帧任务在进行中。用 perf_capture_status 查看进度。");
-
-            int frames = McpToolkit.Int(@params, "frames", 0);
-            if (frames <= 0) frames = PerfAgentSettings.Config.budget.captureFrames;
-            frames = Math.Max(10, Math.Min(PerfPipeline.MaxCaptureFrames, frames));
-
-            // duration_seconds > 0 时按**时间**采集，frames 退化为安全上限。
-            // 「跑完一整局游戏」是按秒描述的，只给帧数没法用。
-            int seconds = McpToolkit.Int(@params, "duration_seconds", 0);
-            if (seconds <= 0) seconds = McpToolkit.DefaultCaptureSeconds();
-            double duration = seconds > 0 ? Math.Min((double)seconds, PerfPipeline.MaxCaptureSeconds) : 0;
-
-            PerfCaptureJob.Begin(frames, duration);
-
-            try
-            {
-                if (duration > 0)
-                {
-                    PerfPipeline.CaptureFrames(frames, duration,
-                        delegate (PerfSnapshot snap) { PerfCaptureJob.Complete(snap); },
-                        delegate (float p) { PerfCaptureJob.Progress = p; },
-                        string.Format(CultureInfo.InvariantCulture, "MCP 抓帧 {0:0.#}s", duration));
-                }
-                else
-                {
-                    PerfPipeline.CaptureFrames(frames,
-                        delegate (PerfSnapshot snap) { PerfCaptureJob.Complete(snap); },
-                        delegate (float p) { PerfCaptureJob.Progress = p; },
-                        "MCP 抓帧");
-                }
-            }
-            catch (Exception e)
-            {
-                PerfCaptureJob.Running = false;
-                PerfCaptureJob.LastError = e.Message;
-                return new ErrorResponse("启动抓帧失败：" + e.Message);
-            }
-
-            return new SuccessResponse(
-                duration > 0
-                    ? string.Format(CultureInfo.InvariantCulture,
-                        "已开始按时长采集：{0:0.#} 秒（安全上限 {1} 帧）。实际帧数由帧率决定。请用 perf_capture_status 查询。",
-                        duration, frames)
-                    : ("已开始抓帧 " + frames + " 帧，预计需要约 " + frames + " 帧的真实时间。请稍后用 perf_capture_status 查询。"),
-                new
-                {
-                    running = true,
-                    frames = frames,
-                    duration_seconds = duration > 0 ? duration : 0,
-                    hint = duration > 0
-                        ? "时长模式：跑完一整局/一整个流程用这个；用 frames 描述既不准也换算麻烦。"
-                        : "帧数模式：想要固定采样量时用这个。",
-                });
-        }
-
-    }
-
-    [McpForUnityTool("perf_capture_status",
-        Description = "查询抓帧进度。running=false 且 snapshot_id 非空表示已完成，可直接用该 snapshot_id 取结论与修复计划。",
-        Group = "core")]
-    public static class PerfCaptureStatus
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            bool running = PerfCaptureJob.Running && PerfSession.Capturing;
-
-            if (running)
-            {
-                double elapsed = 0;
-                DateTime started;
-                if (DateTime.TryParse(PerfCaptureJob.StartedUtc, CultureInfo.InvariantCulture,
-                        DateTimeStyles.RoundtripKind, out started))
-                    elapsed = (DateTime.UtcNow - started).TotalSeconds;
-
-                return new SuccessResponse("抓帧中。", new
-                {
-                    running = true,
-                    target_frames = PerfCaptureJob.TargetFrames,
-                    progress = Math.Round(PerfCaptureJob.Progress, 3),
-                    elapsed_seconds = Math.Round(elapsed, 1),
-                });
-            }
-
-            if (!string.IsNullOrEmpty(PerfCaptureJob.SnapshotId))
-            {
-                var paths = PerfSnapshotStore.List();
-                for (int i = 0; i < paths.Count; i++)
-                {
-                    if (Path.GetFileNameWithoutExtension(paths[i]) != PerfCaptureJob.SnapshotId) continue;
-                    var snap = PerfSnapshotStore.Load(paths[i]);
-                    if (snap != null)
-                        return new SuccessResponse("抓帧已完成。",
-                            new { running = false, snapshot = McpToolkit.Brief(snap) });
-                }
-            }
-
-            return new SuccessResponse("当前没有抓帧任务。", new
-            {
-                running = false,
-                last_error = string.IsNullOrEmpty(PerfCaptureJob.LastError) ? null : PerfCaptureJob.LastError,
-                hint = "用 perf_static_audit（秒级）或 perf_capture_start 开始一次分析。",
-            });
-        }
-    }
-
     // =========================================================================
     // 自动走游戏循环并采集性能
     //
@@ -541,8 +393,7 @@ namespace PerfAgent.McpForUnity
     [McpForUnityTool("perf_playmode_test_start",
         Description = "启动**自动** Play 模式性能测试：进入 Play → 丢弃启动抖动帧 → 采集指定时长 → " +
                       "退出 Play → 出快照。全程由工具控制 Play 模式，你不要手动操作。\n" +
-                      "如果你的需求是「自己一边操作、工具在旁边记录」，请用 perf_follow_capture_start —— " +
-                      "那个才是给人玩的模式。\n" +
+                      "只想静态看看工程/资源/代码问题的话，用 perf_static_audit（秒级、不进 Play）。\n" +
                       "本工具立即返回 job_id（不阻塞），用 perf_playmode_test_status 查进度、" +
                       "perf_playmode_test_result 取结论。",
         Group = "core")]
@@ -717,95 +568,6 @@ namespace PerfAgent.McpForUnity
 
             return new SuccessResponse("已取消自动测试，正在退出 Play 模式。",
                 new { cancelled = true, reason = reason });
-        }
-    }
-
-    // =========================================================================
-    // 跟随采集：用户自己操作，工具在旁边记录
-    //
-    // 与 perf_playmode_test_* 的分工（两者都保留，解决不同问题）：
-    //   - playmode_test_*：工具控制 Play，固定采一段时间。适合回归、版本对比、无人值守。
-    //   - follow_capture_*：**不碰 Play 模式**，用户自己进、自己玩、自己退，时长不限。
-    //
-    // 外部 Agent 的正确用法：调 start 进入待命 → **提示用户去操作**（不要替他按 Play）
-    // → 轮询 status → 用户玩完后再调 stop。
-    // =========================================================================
-
-    [McpForUnityTool("perf_follow_capture_start",
-        Description = "进入「跟随采集」待命：**用户自己进 Play 操作，工具在旁边记录，时长不限**。\n" +
-                      "本工具**不会**替你进 Play —— 它是给人用的模式。调用后应当让用户自己去玩，" +
-                      "玩完再调 perf_follow_capture_stop 收尾。用户已经在 Play 里的话会立刻开始采集。\n" +
-                      "要自动跑固定时长的测试，用 perf_playmode_test_start。",
-        Group = "core")]
-    public static class PerfFollowCaptureStart
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            string error;
-            if (!FollowCapture.Arm(out error)) return new ErrorResponse(error);
-
-            return new SuccessResponse(
-                "跟随采集已就绪。请让用户进入 Play 模式自己操作 —— 进去后会自动开始记录；"
-                + "用户玩完退出 Play，或调用 perf_follow_capture_stop，即会生成快照。",
-                new
-                {
-                    armed = FollowCapture.Armed,
-                    capturing = FollowCapture.Capturing,
-                    hint = "这不是自动测试 —— 别替用户按 Play，让他自己操作。",
-                });
-        }
-    }
-
-    [McpForUnityTool("perf_follow_capture_status",
-        Description = "查询跟随采集状态：是否待命、是否在采、已记录多少帧、最近一份快照 id。",
-        Group = "core")]
-    public static class PerfFollowCaptureStatus
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            bool capturing = FollowCapture.Capturing;
-            bool armed = FollowCapture.Armed;
-
-            return new SuccessResponse(
-                capturing
-                    ? ("跟随采集中：已记录 " + FollowCapture.CapturedFrames + " 帧。")
-                    : (armed ? "跟随采集待命中：等用户进入 Play 模式。" : "当前没有进行中的跟随采集。"),
-                new
-                {
-                    capturing = capturing,
-                    armed = armed,
-                    captured_frames = FollowCapture.CapturedFrames,
-                    last_snapshot_id = string.IsNullOrEmpty(FollowCapture.LastSnapshotId)
-                        ? null : FollowCapture.LastSnapshotId,
-                });
-        }
-    }
-
-    [McpForUnityTool("perf_follow_capture_stop",
-        Description = "结束跟随采集并生成快照。**不会退出 Play 模式** —— 用户想接着玩就接着玩。\n" +
-                      "返回快照 id，用 perf_get_findings / perf_get_metrics 取结论。",
-        Group = "core")]
-    public static class PerfFollowCaptureStop
-    {
-        public static object HandleCommand(JObject @params)
-        {
-            int captured = FollowCapture.CapturedFrames;
-
-            string error;
-            if (!FollowCapture.Stop(out error)) return new ErrorResponse(error);
-
-            string id = FollowCapture.LastSnapshotId;
-
-            return new SuccessResponse(
-                string.IsNullOrEmpty(id)
-                    ? "已取消跟随采集（还没有开始记录）。"
-                    : ("跟随采集已结束，快照 " + id + " 已生成（共 " + captured + " 帧）。"),
-                new
-                {
-                    cancelled = string.IsNullOrEmpty(id),
-                    snapshot_id = string.IsNullOrEmpty(id) ? null : id,
-                    captured_frames = captured,
-                });
         }
     }
 }

@@ -56,8 +56,8 @@ Packages/manifest.json            已接入 MCP for Unity v10.2.0 与本地桥�
 不想要它就把 `com.night.perfagent.mcpbridge` 那一行删掉（桥接代码保留在仓库里，随时再加回来）。
 
 启用后，Unity 菜单 `Window > MCP for Unity` 完成客户端配置，暴露的工具包括
-`perf_static_audit`、`perf_capture_start` / `perf_capture_status`、`perf_playmode_test_*`、
-`perf_follow_capture_*`、`perf_list_snapshots`、`perf_get_findings` / `perf_get_metrics` / `perf_get_fix_plan`。
+`perf_static_audit`、`perf_playmode_test_*`、`perf_list_snapshots`、
+`perf_get_findings` / `perf_get_metrics` / `perf_get_fix_plan`。
 
 桥接层**刻意只读**：没有任何「让外部模型直接改你工程」的入口，修改必须由人在面板里点确认。
 

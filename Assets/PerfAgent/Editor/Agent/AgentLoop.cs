@@ -189,16 +189,6 @@ namespace PerfAgent.Agent
             Status("执行工具：" + name);
             var args = MiniJson.ParseObjectSafe(argsText) ?? new Dictionary<string, object>();
 
-            if (tool.invokeAsync != null)
-            {
-                tool.invokeAsync(args, delegate (object result)
-                {
-                    AddToolResult(callId, SerializeResult(result));
-                    RunTool(calls, index + 1, onDelta, onDone, onError);
-                });
-                return;
-            }
-
             object sync = null;
             try { sync = tool.invoke(args); }
             catch (Exception e) { sync = ErrorObject("工具执行异常: " + e.Message); }
@@ -323,7 +313,7 @@ namespace PerfAgent.Agent
             sb.Append("  · 周期性卡顿尖峰 → get_frames 对比尖峰帧与普通帧，重点看分配量与 GC\n");
             sb.Append("  · 内存高 → get_metrics + get_asset_issues（纹理通常是最大头）\n");
             sb.Append("  · 每帧有分配 → get_code_issues 定位到具体文件与行\n");
-            sb.Append("- 如果当前没有快照，先调用 capture_frames 采集（会耗时若干秒，属正常）。\n");
+            sb.Append("- 如果还没有快照，先用 list_snapshots 看已有快照，再 load_snapshot 载入；确实需要新数据时请让用户点「自动测试」跑一次。\n");
             sb.Append("- 结论要按「收益/成本」排序，优先给出改动小、收益大的项。\n\n");
 
             sb.Append("## 输出格式\n");
@@ -346,7 +336,7 @@ namespace PerfAgent.Agent
             sb.Append("## 当前快照状态\n");
             if (snap == null)
             {
-                sb.Append("尚无快照。请先调用 capture_frames，或 load_snapshot 加载历史快照。\n\n");
+                sb.Append("尚无快照。请先用 list_snapshots 查看已有快照，再 load_snapshot 载入；确实需要新数据时让用户点「自动测试」。\n\n");
             }
             else
             {

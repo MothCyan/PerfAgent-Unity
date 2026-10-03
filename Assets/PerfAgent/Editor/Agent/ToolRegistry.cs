@@ -14,7 +14,6 @@ namespace PerfAgent.Agent
         public string description;
         public string schema;                                                  // JSON Schema 文本
         public Func<Dictionary<string, object>, object> invoke;                 // 同步实现
-        public Action<Dictionary<string, object>, Action<object>> invokeAsync;  // 异步实现（如抓帧）
     }
 
     /// <summary>
@@ -37,10 +36,6 @@ namespace PerfAgent.Agent
             list.Add(Tool("load_snapshot", "加载指定快照作为当前分析对象。",
                 Schema(P("snapshot_id", "string", "快照 id（文件名去掉 .json）"), "\"snapshot_id\""),
                 delegate (Dictionary<string, object> a) { return LoadSnapshot(MiniJson.Str(a, "snapshot_id")); }));
-
-            list.Add(AsyncTool("capture_frames", "在编辑器内采集 N 帧运行时数据（帧耗时、分配、GC、Draw Call、TempAllocator），采集会自动附带全部静态审计与规则分析。耗时约等于 N 帧的真实时间。",
-                Schema(P("frames", "integer", "采样帧数，默认取配置值（300）"), ""),
-                delegate (Dictionary<string, object> a, Action<object> complete) { CaptureFrames(a, complete); }));
 
             list.Add(Tool("get_summary", "获取当前快照的整体摘要：环境、关键指标、结论概览、问题数量。这是排查的第一步，用来决定后续深入哪个方向。",
                 Schema(""), delegate (Dictionary<string, object> a) { return Summary(); }));
@@ -183,36 +178,9 @@ namespace PerfAgent.Agent
             return Error("未找到快照: " + id);
         }
 
-        static void CaptureFrames(Dictionary<string, object> args, Action<object> complete)
-        {
-            if (PerfSession.Capturing)
-            {
-                complete(Error("已有抓帧任务正在进行，请稍后重试。"));
-                return;
-            }
-
-            int frames = MiniJson.Int(args, "frames", PerfAgentSettings.Config.budget.captureFrames);
-            if (frames < 10) frames = 10;
-            if (frames > PerfPipeline.MaxCaptureFrames) frames = PerfPipeline.MaxCaptureFrames;
-
-            // seconds > 0 时按时间采，frames 退化为安全上限 ——
-            // 「跑完一整个流程」这类需求是按秒描述的
-            int seconds = MiniJson.Int(args, "seconds", 0);
-            if (seconds > 0)
-            {
-                double duration = Math.Min((double)seconds, PerfPipeline.MaxCaptureSeconds);
-                PerfPipeline.CaptureFrames(frames, duration,
-                    delegate (PerfSnapshot snap) { complete(Summary()); }, null,
-                    string.Format(CultureInfo.InvariantCulture, "Agent 抓帧 {0:0.#}s", duration));
-                return;
-            }
-
-            PerfPipeline.CaptureFrames(frames, delegate (PerfSnapshot snap) { complete(Summary()); }, null, "Agent 抓帧");
-        }
-
         static object RequireSnapshot()
         {
-            if (PerfSession.Current == null) return Error("当前没有快照。请先调用 capture_frames，或 load_snapshot 加载已有快照。");
+            if (PerfSession.Current == null) return Error("当前没有快照。请先调用 load_snapshot 加载已有快照（用 list_snapshots 查看有哪些）。");
             return null;
         }
 
@@ -312,7 +280,7 @@ namespace PerfAgent.Agent
         {
             var guard = RequireSnapshot(); if (guard != null) return guard;
             var snap = PerfSession.Current;
-            if (snap.frames.Count == 0) return Error("当前快照没有帧数据（只做了静态审计）。请调用 capture_frames。");
+            if (snap.frames.Count == 0) return Error("当前快照没有帧数据（只做了静态审计）。请换一份带帧数据的快照。");
 
             var r = new Dictionary<string, object>();
             r["sampled_frames"] = snap.frames.Count;
@@ -780,16 +748,6 @@ namespace PerfAgent.Agent
             t.description = description;
             t.schema = schema;
             t.invoke = impl;
-            return t;
-        }
-
-        static AgentTool AsyncTool(string name, string description, string schema, Action<Dictionary<string, object>, Action<object>> impl)
-        {
-            var t = new AgentTool();
-            t.name = name;
-            t.description = description;
-            t.schema = schema;
-            t.invokeAsync = impl;
             return t;
         }
 

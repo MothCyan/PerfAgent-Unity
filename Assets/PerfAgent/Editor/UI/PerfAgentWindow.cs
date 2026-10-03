@@ -18,7 +18,6 @@ namespace PerfAgent.UI
 
         // 布局
         Label _status;
-        ProgressBar _progress;
         ScrollView _snapshotHost;
         ScrollView _detailHost;
         Label _transcript;
@@ -28,19 +27,7 @@ namespace PerfAgent.UI
         double _nextJobPoll;
         string _lastNotifiedJobId = "";
 
-        /// <summary>
-        /// 跟随采集状态栏的限流。
-        ///
-        /// PollPlayModeJob 挂在 EditorApplication.update 上（每个编辑器帧都会跑），
-        /// 采集期间逐帧拼字符串 + 赋值 Label.text 会触发界面重排 —— 这些分配会被
-        /// 「GC Allocated In Frame」计数器算进去，**工具等于在污染自己的测量结果**。
-        /// 所以状态栏最多每 0.25 秒、且帧数变化时才刷一次。
-        /// </summary>
-        double _nextFollowPoll;
-        int _lastFollowFrames = -1;
-
         VisualElement _tabRow;
-
         /// <summary>LLM 配置状态条：让用户不用去 Project Settings 就能看到当前状态并就地配置。</summary>
         Label _llmStatus;
 
@@ -76,14 +63,6 @@ namespace PerfAgent.UI
             window.Show();
         }
 
-        [MenuItem(MenuRoot + "采集并分析", false, 101)]
-        public static void CaptureAndAnalyze()
-        {
-            var window = GetWindow<PerfAgentWindow>("性能诊断");
-            window.Capture(PerfAgentSettings.Config.budget.captureFrames,
-                PerfAgentSettings.Config.budget.captureSeconds);
-        }
-
         [MenuItem(MenuRoot + "静态审计（不抓帧）", false, 102)]
         public static void StaticAudit()
         {
@@ -104,67 +83,16 @@ namespace PerfAgent.UI
             window.StartPlayModeTest();
         }
 
-        /// <summary>
-        /// 自动走一遍游戏循环并采数据。
-        /// 真正的流程由 PlayModeTestRunner 驱动（它要穿过两次域重载），这里只负责发起和提示。
-        /// </summary>
-        [MenuItem(MenuRoot + "跟随采集（自己操作，时长不限）", false, 107)]
-        public static void FollowCaptureMenu()
-        {
-            var window = GetWindow<PerfAgentWindow>("性能诊断");
-            window.ToggleFollowCapture();
-        }
-
-        /// <summary>
-        /// 跟随采集：**你自己进 Play 操作，工具在旁边记录**，时长不限。
-        ///
-        /// 按钮行为随状态变：
-        ///   未开始 → 进入待命（下一次进 Play 自动开始记录）
-        ///   待命中 → 取消
-        ///   采集中 → 结束并立即出快照（不会退出 Play，你可以接着玩）
-        ///
-        /// 与「自动测试」的区别：那个是工具控制进 Play、固定采 N 秒再退出，
-        /// 适合回归对比；这个采的是你自己操作的真实过程，脚本演不出玩家的操作节奏。
-        /// </summary>
-        public void ToggleFollowCapture()
-        {
-            string error;
-
-            if (FollowCapture.Capturing)
-            {
-                if (!FollowCapture.Stop(out error)) { SetStatus(error); return; }
-
-                SetStatus("跟随采集已结束，快照 " + FollowCapture.LastSnapshotId + " 已生成。");
-                RefreshSnapshots();
-                RefreshDetails();
-                AppendTranscript(SummarizeForChat(PerfSession.Current));
-                return;
-            }
-
-            if (FollowCapture.Armed)
-            {
-                FollowCapture.Stop(out error);
-                SetStatus("已取消跟随采集。");
-                return;
-            }
-
-            if (!FollowCapture.Arm(out error))
-            {
-                SetStatus("无法开始跟随采集：" + error);
-                return;
-            }
-
-            SetStatus(EditorApplication.isPlaying
-                ? "跟随采集已开始 —— 你继续操作，想结束时再点一次这个按钮（或直接退出 Play）。"
-                : "跟随采集已待命 —— 现在进入 Play 就会自动开始记录，时长不限。");
-        }
-
         public void StartPlayModeTest()
         {
             var job = new PlayModeTestJob();
             job.captureFrames = PerfAgentSettings.Config.budget.captureFrames;
             job.warmupFrames = 60;
             job.label = "Play 模式自动测试";
+
+            // 工具栏的「采集时长 > 0」=> 按时长采（跑完一整个流程用），帧数退化为安全上限。
+            double seconds = PerfAgentSettings.Config.budget.captureSeconds;
+            if (seconds > 0) job.durationSeconds = seconds;
 
             string error;
             if (PlayModeTestRunner.Start(job, out error) == null)
@@ -173,8 +101,12 @@ namespace PerfAgent.UI
                 return;
             }
 
-            SetStatus("已启动自动测试（" + job.id + "）：先丢弃 60 帧启动抖动，再采样 "
-                + job.captureFrames + " 帧。编辑器即将进入 Play 模式，期间请勿手动操作。");
+            SetStatus("已启动自动测试（" + job.id + "）：先丢弃 60 帧启动抖动，再"
+                + (job.durationSeconds > 0
+                    ? ("按 " + job.durationSeconds.ToString("0.#", CultureInfo.InvariantCulture)
+                        + " 秒采集（安全上限 " + job.captureFrames + " 帧）")
+                    : ("采样 " + job.captureFrames + " 帧"))
+                + "。编辑器即将进入 Play 模式，期间请勿手动操作。");
         }
 
         void OnEnable()
@@ -183,7 +115,6 @@ namespace PerfAgent.UI
             PerfAgentSettingsWindow.Changed += RefreshLlmStatus;
             Agent.OnStatus += SetStatus;
             EditorApplication.update += PollPlayModeJob;
-            FollowCapture.Changed += OnFollowCaptureChanged;
         }
 
         void OnDisable()
@@ -193,12 +124,6 @@ namespace PerfAgent.UI
             PerfAgentSettingsWindow.Changed -= RefreshLlmStatus;
             if (_agent != null) _agent.OnStatus -= SetStatus;
             EditorApplication.update -= PollPlayModeJob;
-            FollowCapture.Changed -= OnFollowCaptureChanged;
-        }
-
-        void OnFollowCaptureChanged()
-        {
-            _nextJobPoll = 0;   // 立刻刷新一次状态栏，不等下一个轮询周期
         }
 
         void OnSessionChanged()
@@ -227,11 +152,6 @@ namespace PerfAgent.UI
             _status.style.marginBottom = 2;
             _status.style.color = new Color(0.75f, 0.78f, 0.82f);
             root.Add(_status);
-
-            _progress = new ProgressBar();
-            _progress.style.display = DisplayStyle.None;
-            _progress.style.height = 4;
-            root.Add(_progress);
 
             var columns = new VisualElement();
             columns.style.flexDirection = FlexDirection.Row;
@@ -315,29 +235,6 @@ namespace PerfAgent.UI
         /// </summary>
         void PollPlayModeJob()
         {
-            // 跟随采集优先显示：那是用户正在交互的模式，状态必须实时可见
-            if (FollowCapture.Capturing)
-            {
-                // 限流（见 _nextFollowPoll 的注释）：采集期间每帧重绘状态栏 = 每帧分配，
-                // 会把工具自身的开销算进被测对象的「每帧托管分配」里。
-                int frames = FollowCapture.CapturedFrames;
-                double nowCapturing = EditorApplication.timeSinceStartup;
-                if (frames == _lastFollowFrames || nowCapturing < _nextFollowPoll) return;
-
-                _lastFollowFrames = frames;
-                _nextFollowPoll = nowCapturing + 0.25;
-                SetStatus("跟随采集中（你自己操作）：Profiler 已记录 " + frames
-                    + " 帧。结束时点「跟随采集」按钮，或直接退出 Play。");
-                return;
-            }
-
-            _lastFollowFrames = -1;
-            if (FollowCapture.Armed)
-            {
-                SetStatus("跟随采集已待命：进入 Play 模式后会自动开始记录。点「跟随采集」可取消。");
-                return;
-            }
-
             double now = EditorApplication.timeSinceStartup;
             if (now < _nextJobPoll) return;
             _nextJobPoll = now + 0.5;
@@ -377,7 +274,7 @@ namespace PerfAgent.UI
             var frames = new IntegerField("采样帧数");
             frames.value = PerfAgentSettings.Config.budget.captureFrames;
             frames.style.width = 130;
-            frames.tooltip = "按帧数采集时的采样量。设了「采集时长」后，它退化为安全上限。";
+            frames.tooltip = "自动测试按帧数采集时的采样量。设了「采集时长」后，它退化为安全上限。";
             frames.RegisterValueChangedCallback(delegate (ChangeEvent<int> e)
             {
                 PerfAgentSettings.Config.budget.captureFrames =
@@ -389,7 +286,7 @@ namespace PerfAgent.UI
             var seconds = new DoubleField("采集时长(秒)");
             seconds.value = PerfAgentSettings.Config.budget.captureSeconds;
             seconds.style.width = 165;
-            seconds.tooltip = "大于 0 时按时长采集：跑够这么多秒自动停。\n"
+            seconds.tooltip = "自动测试：大于 0 时按时长采集，跑够这么多秒自动停。\n"
                 + "用于「走完一整个游戏流程」—— 流程长度按秒算，按帧数算既不准也难换算。\n"
                 + "0 = 按左边的帧数采集。";
             seconds.RegisterValueChangedCallback(delegate (ChangeEvent<double> e)
@@ -402,13 +299,7 @@ namespace PerfAgent.UI
             });
             bar.Add(seconds);
 
-            bar.Add(ToolbarButton("采集并分析", delegate
-            {
-                Capture(PerfAgentSettings.Config.budget.captureFrames,
-                    PerfAgentSettings.Config.budget.captureSeconds);
-            }));
             bar.Add(ToolbarButton("自动测试", StartPlayModeTest));
-            bar.Add(ToolbarButton("跟随采集", ToggleFollowCapture));
             bar.Add(ToolbarButton("静态审计", RunStaticAudit));
             bar.Add(ToolbarButton("重新分析", delegate
             {
@@ -597,39 +488,6 @@ namespace PerfAgent.UI
         // 动作
         // =====================================================================
 
-        void Capture(int frames, double seconds = 0)
-        {
-            if (PerfSession.Capturing)
-            {
-                SetStatus("已有抓帧任务在进行中");
-                return;
-            }
-
-            SetStatus(seconds > 0
-                ? string.Format(CultureInfo.InvariantCulture, "按时长采集中…（{0:0.#} 秒）", seconds)
-                : ("抓帧中…（" + frames + " 帧）"));
-            _progress.style.display = DisplayStyle.Flex;
-            _progress.value = 0;
-
-            Action<PerfSnapshot> onDone = delegate (PerfSnapshot snap)
-            {
-                _progress.style.display = DisplayStyle.None;
-                SetStatus(string.Format(CultureInfo.InvariantCulture,
-                    "抓帧完成：{0} 帧，{1} 条结论，{2} 个资源问题，{3} 个代码问题",
-                    snap.capturedFrameCount > 0 ? snap.capturedFrameCount : snap.frames.Count,
-                    snap.findings.Count, snap.assetIssues.Count, snap.codeIssues.Count));
-                RefreshSnapshots();
-                RefreshDetails();
-                AppendTranscript(SummarizeForChat(snap));
-            };
-            Action<float> onProgress = delegate (float p) { _progress.value = p * 100f; };
-
-            if (seconds > 0)
-                PerfPipeline.CaptureFrames(frames, seconds, onDone, onProgress, "手动抓帧（按时长）");
-            else
-                PerfPipeline.CaptureFrames(frames, onDone, onProgress, "手动抓帧");
-        }
-
         void RunStaticAudit()
         {
             SetStatus("静态审计中…");
@@ -733,7 +591,7 @@ namespace PerfAgent.UI
         string ScriptOnlyAnswer(string question)
         {
             var snap = PerfSession.Current;
-            if (snap == null) return "当前没有快照。请先点「采集并分析」。\n";
+            if (snap == null) return "当前没有快照。先跑一次「自动测试」，或从左上列表载入已有快照。\n";
 
             var sb = new StringBuilder();
             sb.Append("（未配置 LLM，以下为本地规则引擎结论，未使用任何外部服务。")
@@ -890,7 +748,7 @@ namespace PerfAgent.UI
             var snap = PerfSession.Current;
             if (snap == null)
             {
-                _detailHost.Add(new Label("还没有数据。点「采集并分析」开始。"));
+                _detailHost.Add(new Label("还没有数据。先跑一次「自动测试」，或从左上列表载入已有快照。"));
                 return;
             }
 
