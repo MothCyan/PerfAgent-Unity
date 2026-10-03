@@ -15,10 +15,11 @@
 /[Mm]emoryCaptures/
 /[Rr]ecordings/
 
-# Unity 自动生成的工程/解决方案文件
-*.csproj
-*.unityproj
-*.sln
+# Unity 自动生成的工程/解决方案文件（只会生成在工程根目录，所以只忽略根目录的）
+# 注意别写成 *.csproj —— 那会把手写的测试工程（Tests~/Standalone/*.csproj）一起挡掉
+/*.csproj
+/*.unityproj
+/*.sln
 *.suo
 *.user
 *.userprefs

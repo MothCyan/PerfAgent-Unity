@@ -51,12 +51,10 @@ namespace PerfAgent.RuleRegression
                 PlayModeTestUnknownPhaseFallsBackToNone,
                 SceneFindingsHaveExecutableFixes,
                 DrawCallFindingOffersAtlasFix,
-                CodeFindingsExposeSafeAutoFixes,
-                SourcePatcherOnlyRewritesSafeLines,
+                CodeFindingsExposeNoAutoFix,
                 FrameDownsamplePreservesShapeAndBounds,
                 PlayModeTestJobProgressHandlesDurationMode,
                 ToolResultFolderFoldsWithoutBreakingPairs,
-                CodeFixParserExtractsSuggestion,
                 CodePatternIsParsedBeforeMatching
             };
 
@@ -571,7 +569,9 @@ namespace PerfAgent.RuleRegression
             True(plan.HasExecutable, "应当提供可执行的图集动作，而不只是「建议做图集」");
         }
 
-        static void CodeFindingsExposeSafeAutoFixes()
+        // 代码类结论只给「跳转 + 人工」：本插件不提供改写脚本源码的能力。
+        // 这条断言是故意写死的 —— 重新把自动改代码加回来之前，先想清楚风险。
+        static void CodeFindingsExposeNoAutoFix()
         {
             var snapshot = CleanSnapshot();
             snapshot.codeIssues.Add(CodeIssueOf("Assets/Scripts/A.cs", 10, "tag_compare"));
@@ -579,47 +579,16 @@ namespace PerfAgent.RuleRegression
             snapshot.codeIssues.Add(CodeIssueOf("Assets/Scripts/B.cs", 5, "camera_main"));
             Evaluate(snapshot);
 
-            var tagPlan = PlanFor(snapshot, "code_tag_compare");
-            True(tagPlan != null, "tag_compare 应当产出计划");
-            True(tagPlan.HasExecutable, "tag_compare 语义等价，应当能自动改写");
-            Equal(1, tagPlan.ExecutableStepCount, "tag_compare 只应给一个可执行步骤");
-            // 改代码即使语义等价，也不能进「一键执行低风险项」—— 必须由人单独确认
-            Equal(0, tagPlan.SafeStepCount, "源码改写不应被标为低风险，否则会被批量执行误伤");
-
-            var gcPlan = PlanFor(snapshot, "code_gc_collect");
-            True(gcPlan != null, "gc_collect 应当产出计划");
-            True(gcPlan.HasExecutable, "gc_collect 应当能自动改写");
-
-            // 安全边界：需要上下文重构的模式**必须**保持无按钮。
-            // 这条断言是故意写死的 —— “补齐功能”的冲动很容易把这条线推过去。
-            var cameraPlan = PlanFor(snapshot, "code_camera_main");
-            True(cameraPlan != null, "camera_main 应当产出计划（至少给出跳转与建议）");
-            True(!cameraPlan.HasExecutable, "camera_main 需要插字段与改初始化时机，不能给执行按钮");
-        }
-
-        static void SourcePatcherOnlyRewritesSafeLines()
-        {
-            string patched;
-
-            True(PerfSourcePatcher.TryPatchTagCompare("if (x.tag == \"Player\")", out patched), "正向 tag 比较应被改写");
-            Equal("if (x.CompareTag(\"Player\"))", patched, "正向改写结果");
-
-            True(PerfSourcePatcher.TryPatchTagCompare("if (x.tag != \"Enemy\")", out patched), "反向 tag 比较应被改写");
-            Equal("if (!x.CompareTag(\"Enemy\"))", patched, "反向改写要保留取反语义");
-
-            True(PerfSourcePatcher.TryPatchTagCompare("if (\"Player\" == x.tag)", out patched), "字面量在左侧也应被改写");
-            Equal("if (x.CompareTag(\"Player\"))", patched, "字面量在左侧的改写结果");
-
-            // 拿不准的一律不动
-            True(!PerfSourcePatcher.TryPatchTagCompare("bool same = a.tag == b.tag;", out patched), "两边都是 tag 变量时不该改写");
-            True(!PerfSourcePatcher.TryPatchTagCompare("// x.tag == \"Player\"", out patched), "注释行不该改写");
-            True(!PerfSourcePatcher.TryPatchTagCompare("if (x.CompareTag(\"Player\"))", out patched), "已经是 CompareTag 不应重复改写");
-
-            // GC.Collect：只有它独占一行才敢注释
-            True(PerfSourcePatcher.TryCommentGcCollect("        GC.Collect();", out patched), "独占一行的 GC.Collect 应被处理");
-            True(patched.Contains("//"), "处理结果应当保留原行作为注释");
-            True(!PerfSourcePatcher.TryCommentGcCollect("if (GC.Collect() != null) Do();", out patched), "混在表达式里会改坏语法，必须拒绝");
-            True(!PerfSourcePatcher.TryCommentGcCollect("// GC.Collect();", out patched), "已注释的行不重复处理");
+            string[] ids = { "code_tag_compare", "code_gc_collect", "code_camera_main" };
+            for (int i = 0; i < ids.Length; i++)
+            {
+                var plan = PlanFor(snapshot, ids[i]);
+                True(plan != null, ids[i] + " 应当产出计划");
+                True(!plan.HasExecutable, ids[i] + " 不能给执行按钮：插件不自动改写源码");
+                Equal(0, plan.ExecutableStepCount, ids[i] + " 不应有任何可执行步骤");
+                True(HasNavigateStep(plan), ids[i] + " 应当提供跳转到源码的步骤");
+                True(HasManualStep(plan), ids[i] + " 应当给出人工处理步骤");
+            }
         }
 
         // =====================================================================
@@ -740,41 +709,6 @@ namespace PerfAgent.RuleRegression
         }
 
         // =====================================================================
-        // 代码修复建议：模型输出格式不受控，解析必须钉死
-        // =====================================================================
-        static void CodeFixParserExtractsSuggestion()
-        {
-            string code, note;
-
-            True(PerfCodeFixParser.TryExtract(
-                "问题在于每次都在重新查找相机。\n\n```csharp\nprivate Camera _cam;\nvoid Awake() { _cam = Camera.main; }\n```\n\n这样只查一次。",
-                out code, out note), "应能抽出代码块");
-            True(code != null && code.Contains("_cam"), "代码块内容应被完整取出");
-            True(!code.Contains("```"), "抽出的代码里不应残留围栏标记");
-            True(note.Contains("每次都在重新查找"), "代码块之前的说明应保留");
-            True(note.Contains("只查一次"), "代码块之后的说明应保留");
-
-            // 模型拒绝给代码、只说明原因 —— 这也是有效结果，不能当失败丢掉
-            True(!PerfCodeFixParser.TryExtract("这里需要引入对象池，无法局部安全修复。", out code, out note),
-                "没有代码块时应返回 false");
-            True(note.Contains("对象池"), "拒绝时也要把说明带出来，否则用户看不到原因");
-
-            // 带语言标记
-            True(PerfCodeFixParser.TryExtract("```cs\nvar x = 1;\n```", out code, out note), "```cs 也应识别");
-            Equal("var x = 1;", code, "语言标记不应混进代码");
-
-            // 空代码块 = 没给建议
-            True(!PerfCodeFixParser.TryExtract("```csharp\n```", out code, out note), "空代码块应视为无建议");
-
-            // 未闭合的围栏不应崩
-            True(!PerfCodeFixParser.TryExtract("```csharp\nvar x = 1;", out code, out note), "未闭合围栏不应崩");
-
-            // 空输入
-            True(!PerfCodeFixParser.TryExtract("", out code, out note), "空输入不应崩");
-            True(!PerfCodeFixParser.TryExtract(null, out code, out note), "null 不应崩");
-        }
-
-        // =====================================================================
         // 反模式标识的解析
         //
         // 这组测试是为了钉死一个曾经静默失效的 bug：codeIssues 里存的 pattern
@@ -792,28 +726,24 @@ namespace PerfAgent.RuleRegression
             Equal("", CodeIssue.BasePattern(""), "空串不应崩");
             Equal("", CodeIssue.BasePattern(null), "null 不应崩");
 
-            // 关键：修复计划必须能为这种复合 pattern 产出**可操作**的步骤
+            // 关键：复合 pattern 也必须能被计划识别出来（曾经因为没解析前缀而整条链路落空）
             var snapshot = CleanSnapshot();
             snapshot.codeIssues.Add(CodeIssueOf("Assets/Scripts/A.cs", 10, "Update + tag_compare"));
             Evaluate(snapshot);
 
             var plan = PlanFor(snapshot, "code_Update___tag_compare");
             True(plan != null, "应当产出修复计划");
-            True(plan.HasExecutable, "tag_compare 出现在 Update 里也必须能机械改写");
-            True(plan.SafeStepCount == 0, "源码改写不应被标为低风险（否则会被批量执行误伤）");
+            True(HasNavigateStep(plan), "复合 pattern 也要能定位到具体行");
+            True(!plan.HasExecutable, "代码类结论不应有执行按钮");
 
-            // 非机械可改的模式至少要有 AI 改写入口，不能只剩「人工」
             var snapshot2 = CleanSnapshot();
             snapshot2.codeIssues.Add(CodeIssueOf("Assets/Scripts/B.cs", 20, "Update + linq"));
             Evaluate(snapshot2);
 
             var plan2 = PlanFor(snapshot2, "code_Update___linq");
             True(plan2 != null, "linq 应当产出修复计划");
-
-            bool hasAiRewrite = false;
-            for (int i = 0; i < plan2.steps.Count; i++)
-                if (plan2.steps[i].kind == FixKind.AiRewrite && plan2.steps[i].targetCount > 0) hasAiRewrite = true;
-            True(hasAiRewrite, "linq 这类问题必须给 AI 改写入口，而不是只有「人工」");
+            True(HasNavigateStep(plan2), "linq 也要能定位到具体行");
+            True(!plan2.HasExecutable, "代码类结论不应有执行按钮");
         }
 
         static List<FrameStat> Frames(int count)

@@ -48,14 +48,6 @@ namespace PerfAgent.Analysis
 
         // 图集（降低 Draw Call / SetPass）
         public const string AtlasCreateSprite = "atlas.create.sprite";
-
-        // 源码修复
-        public const string CodeTagCompare = "code.tag.compare";
-        public const string CodeGcCollectRemove = "code.gccollect.remove";
-
-        /// <summary>由 LLM 生成补丁、人工确认后才写回文件。不是「直接执行」—— 见 FixKind.AiRewrite。</summary>
-        public const string CodeAiRewrite = "code.ai.rewrite";
-        public const string CodeDebugLogStrip = "code.debuglog.strip";
     }
 
     /// <summary>修复风险：决定按钮颜色、是否需要二次确认、能否被「一键执行低风险项」批量执行。</summary>
@@ -87,19 +79,13 @@ namespace PerfAgent.Analysis
         public const string ProjectSetting = "project_setting"; // 改 ProjectSettings
         public const string SceneObject = "scene_object";       // 改场景对象（可 Undo）
         public const string AssetCreate = "asset_create";       // 新建资产（例如生成 SpriteAtlas）
-        public const string SourcePatch = "source_patch";       // 改写脚本源码（逐行替换，可整文件回滚）
-        /// <summary>
-        /// 由模型生成补丁、人工确认后才写回。**故意不列入 IsExecutable** ——
-        /// 它不是「执行」而是「提案」，不能被「一键执行低风险项」收集到。
-        /// </summary>
-        public const string AiRewrite = "ai_rewrite";
         public const string Navigate = "navigate";              // 只跳转，不改任何东西
         public const string Manual = "manual";                  // 只能人工做，没有执行按钮
 
         public static bool IsExecutable(string kind)
         {
             return kind == ImportSetting || kind == ProjectSetting || kind == SceneObject
-                || kind == AssetCreate || kind == SourcePatch;
+                || kind == AssetCreate;
         }
     }
 
@@ -560,33 +546,11 @@ namespace PerfAgent.Analysis
         }
 
         /// <summary>
-        /// 该模式对应的 文件:行 列表。
+        /// 代码类结论的修复计划。
         ///
-        /// 匹配前必须过 BasePattern —— codeIssues 里存的是 "Update + linq" 这种复合串，
-        /// 直接跟 "linq" 比会一个都匹配不上（这个 bug 曾经让整条代码修复链路静默失效）。
-        /// </summary>
-        static List<string> CodeTargets(PerfSnapshot snapshot, string pattern)
-        {
-            var result = new List<string>();
-            if (snapshot.codeIssues == null) return result;
-
-            for (int i = 0; i < snapshot.codeIssues.Count; i++)
-            {
-                var c = snapshot.codeIssues[i];
-                if (CodeIssue.BasePattern(c.pattern) != pattern) continue;
-
-                string entry = c.file + ":" + c.line.ToString(CultureInfo.InvariantCulture);
-                if (!result.Contains(entry)) result.Add(entry);
-            }
-            return result;
-        }
-
-        /// <summary>
-        /// 代码类结论的修复计划。分两档：
-        ///   - 机械替换（tag 比较、GC.Collect）：语义等价，直接给执行按钮；
-        ///   - 其余：给「AI 改写」入口 —— 模型读上下文生成补丁，人在窗口里对照确认后才写回。
-        /// 另外无论哪种模式都提供 AI 改写入口：它比机械替换覆盖更广，
-        /// 也能处理机械替换主动拒绝的情况（比如 tag 比较混在复杂表达式里）。
+        /// 只产出「跳到问题位置」+ 人工步骤 —— 本插件不提供改写脚本源码的能力：
+        /// 自动改代码要理解上下文，错一行就是编译不过或运行时崩，风险远大于收益。
+        /// 具体的改法靠规则引擎的建议与 LLM 对话，由使用者自己动手。
         /// </summary>
         static void AddCodeSteps(PerfSnapshot snapshot, PerfFinding finding, PerfFixPlan plan)
         {
@@ -595,81 +559,11 @@ namespace PerfAgent.Analysis
             string pattern = finding.fixCode;
             if (string.IsNullOrEmpty(pattern)) pattern = CodeIssue.BasePattern(finding.id);
 
-            var targets = CodeTargets(snapshot, pattern);
-
-            AddAiRewriteStep(plan, pattern, targets);
-
-            if (pattern == "tag_compare")
-            {
-                // 刻意标 Moderate 而不是 Safe：改的是**源码**，
-                // 标成 Safe 会被「一键执行低风险项」顺手带上 —— 改代码必须让人单独确认。
-                AddSourceBatch(plan, FixActionIds.CodeTagCompare, FixRisk.Moderate,
-                    "改为 CompareTag（机械改写）",
-                    "把 .tag == \"X\" 改写为 .CompareTag(\"X\")；!= 会保留取反语义",
-                    "消除每帧字符串比较的分配",
-                    targets);
-            }
-            else if (pattern == "gc_collect")
-            {
-                AddSourceBatch(plan, FixActionIds.CodeGcCollectRemove, FixRisk.Moderate,
-                    "注释掉 GC.Collect（机械改写）",
-                    "把独占一行的 GC.Collect(...) 注释掉并注明原因，原行保留便于复核",
-                    "移除人为制造的卡顿尖峰",
-                    targets);
-            }
-
             AddCodeNavigation(snapshot, plan, "跳到问题位置", pattern);
 
             AddManual(plan, finding.title, string.IsNullOrEmpty(finding.recommendation)
-                ? "建议先用 AI 改写拿一版草稿，再自己审一遍。"
+                ? "按证据链定位到该处代码后人工处理。"
                 : finding.recommendation);
-        }
-
-        /// <summary>
-        /// AI 改写入口。
-        ///
-        /// 它不是「执行」动作 —— 点击后打开对比窗口，模型读上下文生成补丁，
-        /// 人确认后才写回文件。所以用单独的 kind，也不能被「一键执行低风险项」收到。
-        /// 为什么还要给按钮：只给「人工」两个字，用户唯一能做的事就是自己从头写；
-        /// 给一版可对照的草稿，效率差别很大。
-        /// </summary>
-        static void AddAiRewriteStep(PerfFixPlan plan, string pattern, List<string> targets)
-        {
-            if (targets == null || targets.Count == 0) return;
-
-            var step = new PerfFixStep();
-            step.actionId = FixActionIds.CodeAiRewrite;
-            step.kind = FixKind.AiRewrite;
-            step.risk = FixRisk.Moderate;
-            step.title = "AI 改写（生成草稿后人工确认）";
-            step.detail = "把问题行附近 25 行交给模型生成替换代码；"
-                + "你在窗口中对照前后代码，确认无误后再应用";
-            step.expectedGain = "机械替换做不了的改动（插字段、改初始化时机）也能拿到可用草稿";
-            step.reversible = true;
-            step.batch = true;
-            step.targetCount = targets.Count;
-            for (int i = 0; i < targets.Count && i < MaxTargetsShown; i++) step.targets.Add(targets[i]);
-            plan.steps.Add(step);
-        }
-
-        /// <summary>源码改写类步骤（kind = source_patch，撤销是整文件还原）。</summary>
-        static void AddSourceBatch(PerfFixPlan plan, string actionId, string risk,
-            string title, string detail, string gain, List<string> targets)
-        {
-            if (targets == null || targets.Count == 0) return;
-
-            var step = new PerfFixStep();
-            step.actionId = actionId;
-            step.kind = FixKind.SourcePatch;
-            step.risk = risk;
-            step.title = title;
-            step.detail = detail;
-            step.expectedGain = gain;
-            step.reversible = true;
-            step.batch = true;
-            step.targetCount = targets.Count;
-            for (int i = 0; i < targets.Count && i < MaxTargetsShown; i++) step.targets.Add(targets[i]);
-            plan.steps.Add(step);
         }
 
         /// <summary>

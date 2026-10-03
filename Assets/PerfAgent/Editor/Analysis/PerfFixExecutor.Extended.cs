@@ -16,7 +16,7 @@ namespace PerfAgent.Analysis
     /// PerfFixExecutor 的扩展部分（第二批动作）。
     ///
     /// 拆出来的原因：主文件已经承载了「资源导入 + 工程设置」两类动作的骨架，
-    /// 而这一批引入了两种全新形态 —— 新建资产（图集）与改写源码 ——
+    /// 而这一批引入了另一种全新形态 —— 新建资产（图集），
     /// 混在一起会让风险等级完全不同的代码互相遮蔽。
     ///
     /// 沿用主文件的纪律：找不到目标就跳过、已经符合预期就跳过、
@@ -39,8 +39,6 @@ namespace PerfAgent.Analysis
                 case FixActionIds.SceneMeshColliderConvex:
                 case FixActionIds.PhysicsSimulationFixed:
                 case FixActionIds.AtlasCreateSprite:
-                case FixActionIds.CodeTagCompare:
-                case FixActionIds.CodeGcCollectRemove:
                     return true;
                 default:
                     return false;
@@ -75,10 +73,6 @@ namespace PerfAgent.Analysis
 
                 case FixActionIds.AtlasCreateSprite:
                     return CreateSpriteAtlas(step, undo);
-
-                case FixActionIds.CodeTagCompare:
-                case FixActionIds.CodeGcCollectRemove:
-                    return ApplySourcePatches(step, undo);
 
                 default:
                     return null;
@@ -115,11 +109,6 @@ namespace PerfAgent.Analysis
 
                 case FixActionIds.AtlasCreateSprite:
                     UndoCreatedAssets(items, outcome);
-                    return true;
-
-                case FixActionIds.CodeTagCompare:
-                case FixActionIds.CodeGcCollectRemove:
-                    UndoSourceFiles(items, outcome);
                     return true;
 
                 default:
@@ -387,125 +376,6 @@ namespace PerfAgent.Analysis
         }
 
         // =====================================================================
-        // 源码修复
-        //
-        // targets 形如 "Assets/Scripts/Foo.cs:123"，与审计写进快照的格式一致。
-        // 逐行改写，改前把**整个文件**存进 undoPayload —— 源码比导入设置金贵得多，
-        // 撤销必须是整文件还原，不做「反向正则」这种可能失效的花活。
-        // =====================================================================
-
-        static PerfFixOutcome ApplySourcePatches(PerfFixStep step, List<UndoItem> undo)
-        {
-            var outcome = new PerfFixOutcome();
-            var byFile = new Dictionary<string, List<int>>();
-
-            for (int i = 0; i < step.targets.Count; i++)
-            {
-                string entry = step.targets[i];
-                int colon = entry.LastIndexOf(':');
-                if (colon <= 0 || colon == entry.Length - 1) continue;
-
-                string file = entry.Substring(0, colon);
-                int line;
-                if (!int.TryParse(entry.Substring(colon + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out line)) continue;
-                if (line <= 0) continue;
-
-                List<int> lines;
-                if (!byFile.TryGetValue(file, out lines)) { lines = new List<int>(); byFile[file] = lines; }
-                if (!lines.Contains(line)) lines.Add(line);
-            }
-
-            int index = 0;
-            foreach (var kv in byFile)
-            {
-                if (Progress != null) Progress(index++, byFile.Count, kv.Key);
-
-                if (!File.Exists(kv.Key))
-                {
-                    outcome.skippedCount++;
-                    outcome.details.Add("文件不存在：" + kv.Key);
-                    continue;
-                }
-
-                string original;
-                string[] lines;
-                string newline = "\n";
-                try
-                {
-                    original = File.ReadAllText(kv.Key);
-                    lines = File.ReadAllLines(kv.Key);
-                    // 保持原有行尾：统一写成 \n 会把整个文件的 diff 都翻一遍
-                    if (original.Contains("\r\n")) newline = "\r\n";
-                }
-                catch (Exception e)
-                {
-                    outcome.skippedCount++;
-                    outcome.details.Add("读取失败 " + kv.Key + "：" + e.Message);
-                    continue;
-                }
-
-                // 先把所有改动算出来，再统一落盘 —— 避免写到一半失败留下半成品
-                var edits = new List<KeyValuePair<int, string[]>>();
-                for (int i = 0; i < kv.Value.Count; i++)
-                {
-                    int idx = kv.Value[i] - 1;
-                    if (idx < 0 || idx >= lines.Length) { outcome.skippedCount++; continue; }
-
-                    string patched;
-                    bool changed = step.actionId == FixActionIds.CodeTagCompare
-                        ? PerfSourcePatcher.TryPatchTagCompare(lines[idx], out patched)
-                        : PerfSourcePatcher.TryCommentGcCollect(lines[idx], out patched);
-
-                    if (!changed) { outcome.skippedCount++; continue; }
-
-                    edits.Add(new KeyValuePair<int, string[]>(idx, patched.Split('\n')));
-                }
-
-                if (edits.Count == 0)
-                {
-                    outcome.skippedCount++;
-                    if (outcome.details.Count < 10) outcome.details.Add("无需改写：" + kv.Key);
-                    continue;
-                }
-
-                // 从后往前改，行号才不会错位
-                edits.Sort(delegate (KeyValuePair<int, string[]> a, KeyValuePair<int, string[]> b)
-                { return b.Key.CompareTo(a.Key); });
-
-                var list = new List<string>(lines);
-                for (int i = 0; i < edits.Count; i++)
-                {
-                    list.RemoveAt(edits[i].Key);
-                    list.InsertRange(edits[i].Key, edits[i].Value);
-                }
-
-                try
-                {
-                    File.WriteAllText(kv.Key, string.Join(newline, list.ToArray()) + newline);
-                    undo.Add(new UndoItem(kv.Key, new Dictionary<string, string> { { "content", original } }));
-                    outcome.changedCount += edits.Count;
-                    if (outcome.details.Count < 10) outcome.details.Add(kv.Key + "（" + edits.Count + " 处）");
-                }
-                catch (Exception e)
-                {
-                    outcome.skippedCount++;
-                    if (outcome.details.Count < 10) outcome.details.Add("写入失败 " + kv.Key + "：" + e.Message);
-                }
-            }
-
-            if (outcome.changedCount > 0) AssetDatabase.Refresh();
-
-            outcome.success = outcome.changedCount > 0;
-            outcome.needsReanalyze = outcome.changedCount > 0;
-            outcome.message = outcome.changedCount > 0
-                ? string.Format(CultureInfo.InvariantCulture,
-                    "已改写 {0} 处代码（跳过 {1} 处）。建议在本机 diff 里过一遍再提交。",
-                    outcome.changedCount, outcome.skippedCount)
-                : "没有可安全自动改写的行：剩下的需要人工处理（自动改写不了的情况都会保留原样）。";
-            return outcome;
-        }
-
-        // =====================================================================
         // 撤销
         // =====================================================================
 
@@ -596,28 +466,6 @@ namespace PerfAgent.Analysis
                 if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(item.target) == null) continue;
                 if (AssetDatabase.DeleteAsset(item.target)) outcome.changedCount++;
             }
-        }
-
-        static void UndoSourceFiles(List<UndoItem> items, PerfFixOutcome outcome)
-        {
-            for (int i = 0; i < items.Count; i++)
-            {
-                var item = items[i];
-                string content;
-                if (!item.values.TryGetValue("content", out content)) continue;
-
-                try
-                {
-                    File.WriteAllText(item.target, content);
-                    outcome.changedCount++;
-                }
-                catch (Exception e)
-                {
-                    if (outcome.details.Count < 10) outcome.details.Add("还原失败 " + item.target + "：" + e.Message);
-                }
-            }
-
-            if (outcome.changedCount > 0) AssetDatabase.Refresh();
         }
     }
 }

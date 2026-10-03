@@ -388,7 +388,6 @@ namespace PerfAgent.UI
             }));
             bar.Add(ToolbarButton("自动测试", StartPlayModeTest));
             bar.Add(ToolbarButton("跟随采集", ToggleFollowCapture));
-            bar.Add(ToolbarButton("代码修复", PerfCodeFixWindow.Open));
             bar.Add(ToolbarButton("静态审计", RunStaticAudit));
             bar.Add(ToolbarButton("重新分析", delegate
             {
@@ -988,20 +987,7 @@ namespace PerfAgent.UI
             text.style.flexShrink = 1;
             head.Add(text);
 
-            if (step.kind == FixKind.AiRewrite && step.targets.Count > 0)
-            {
-                // AI 改写的 CanExecute 是 false（它不直接改文件），所以必须排在
-                // CanExecute 分支之前，否则会掉进「需人工」那个 else 里
-                string aiTarget = step.targets[0];
-                var ai = new Button(delegate { PerfCodeFixWindow.Open(aiTarget, findingId); });
-                ai.text = step.targetCount > 1 ? ("AI 改写 " + step.targetCount + " 处") : "AI 改写";
-                ai.style.width = 96;
-                ai.tooltip = step.detail
-                    + (string.IsNullOrEmpty(step.expectedGain) ? "" : "\n预期收益：" + step.expectedGain)
-                    + "\n\n这是生成草稿 —— 需要你在窗口里对照前后代码确认后，才会写回文件。";
-                head.Add(ai);
-            }
-            else if (step.CanExecute)
+            if (step.CanExecute)
             {
                 var run = new Button(delegate { ExecuteStep(step, findingId, plan); });
                 run.text = step.targetCount > 1 ? ("执行 " + step.targetCount + " 项") : "执行";
