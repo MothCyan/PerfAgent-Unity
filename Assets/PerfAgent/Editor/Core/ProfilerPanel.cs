@@ -153,6 +153,21 @@ namespace PerfAgent.Core
         /// <summary>读帧明细的时间预算（毫秒）；超了就停下并写明（宁可少采，不把编辑器拖死）。</summary>
         public const int SampleTimeBudgetMs = 1500;
 
+        /// <summary>
+        /// 单帧耗时的合理上限（毫秒）。
+        ///
+        /// 这个闸门是必需的：面板的列语义只能从内容反推，一旦把别的列（比如某列字节数 /
+        /// 累计值）当成耗时列，会算出几十亿 ms 这种荒谬值，然后一路变成「严重：帧耗时超出预算」。
+        /// 实测踩过这个坑（36 亿 ms/帧）。超出上限就当读不到，不参与统计。
+        /// </summary>
+        public const double MaxPlausibleFrameMs = 2000.0;
+
+        /// <summary>帧耗时读数是否合理（0 &lt; ms ≤ 2000）。</summary>
+        public static bool IsPlausibleFrameMs(double ms)
+        {
+            return ms > 0 && ms <= MaxPlausibleFrameMs && !double.IsNaN(ms) && !double.IsInfinity(ms);
+        }
+
         /// <summary>单次分析最多覆盖多少帧（面板默认历史也就两千帧）。</summary>
         public const int MaxWindowFrames = 5000;
 
@@ -226,21 +241,39 @@ namespace PerfAgent.Core
             else if (!string.IsNullOrEmpty(data.frameTimeSource))
                 data.notes.Add("帧耗时来源：" + data.frameTimeSource + "（其中 " + data.samples.Count + "/" + data.frameCount + " 帧参与统计）。");
 
-            if (data.gcAlloc != null && !data.gcAlloc.readable)
-                data.notes.Add("面板的 GC 分配序列读不到（" + data.gcAlloc.error + "），本次不给每帧分配结论。");
+            if (data.gcAlloc != null && data.gcAlloc.validCount == 0)
+                data.notes.Add("面板的 GC 分配序列没有有效样本（已试 " + string.Join(" / ", StatRecorder.GcAllocCounters)
+                               + "）：本次不给「每帧托管分配」结论。"
+                               + "同一次读取里渲染类序列（Draw Call 等）是正常的，说明批量读接口可用，"
+                               + "问题出在内存类计数器的名字或可用性上 —— 用 API 探针第【5】节可看到实际序列与数值。");
 
             return data;
         }
 
         static void ReadAllSeries(PanelCaptureData data)
         {
-            data.gcAlloc = ReadSeries("Memory", "GC Allocated In Frame", data.firstFrame, data.frameCount);
+            // 计数器名字跳版本会变，内存类尤其如此：候选名逐个试，能读到就用。
+            // （基线测量用的是同一张候选表，保证两边口径一致）
+            data.gcAlloc = ReadFirstAvailable("Memory", StatRecorder.GcAllocCounters, data.firstFrame, data.frameCount);
             data.drawCalls = ReadSeries("Render", "Draw Calls Count", data.firstFrame, data.frameCount);
             data.setPass = ReadSeries("Render", "SetPass Calls Count", data.firstFrame, data.frameCount);
             data.triangles = ReadSeries("Render", "Triangles Count", data.firstFrame, data.frameCount);
             data.batches = ReadSeries("Render", "Batches Count", data.firstFrame, data.frameCount);
             data.textureMemory = ReadSeries("Memory", "Texture Memory", data.firstFrame, data.frameCount);
             data.totalUsed = ReadSeries("Memory", "Total Used Memory", data.firstFrame, data.frameCount);
+        }
+
+        /// <summary>候选名逐个试，返回第一个有有效样本的序列。</summary>
+        static PanelSeries ReadFirstAvailable(string category, string[] names, int firstFrame, int count)
+        {
+            PanelSeries first = null;
+            for (int i = 0; i < names.Length; i++)
+            {
+                var s = ReadSeries(category, names[i], firstFrame, count);
+                if (s.readable && s.validCount > 0) return s;
+                if (first == null) first = s;
+            }
+            return first;
         }
 
         /// <summary>
@@ -396,7 +429,7 @@ namespace PerfAgent.Core
                             ? data.firstFrame + i
                             : data.firstFrame + (int)((long)i * (data.frameCount - 1) / Math.Max(1, wanted - 1));
                         long ms = series.ValueAt(idx);
-                        if (ms > 0) AddSample(data, idx, ms);
+                        if (IsPlausibleFrameMs(ms)) AddSample(data, idx, ms);
                     }
                     return data.samples.Count > 0;
                 }
@@ -432,7 +465,7 @@ namespace PerfAgent.Core
 
                 var layout = ProfilerColumnLayout.Detect(rows);
                 double total = MaxMs(rows[0], layout);
-                if (total > 0)
+                if (IsPlausibleFrameMs(total))
                 {
                     if (string.IsNullOrEmpty(data.frameTimeSource))
                         data.frameTimeSource = "面板 HierarchyFrameDataView 的 PlayerLoop 总耗时（不含编辑器开销）";
@@ -446,10 +479,10 @@ namespace PerfAgent.Core
                 try
                 {
                     double v = Convert.ToDouble(raw, CultureInfo.InvariantCulture);
-                    if (v > 0)
+                    if (IsPlausibleFrameMs(v))
                     {
                         if (string.IsNullOrEmpty(data.frameTimeSource))
-                            data.frameTimeSource = "面板 FrameDataView.frameTimeMs（含编辑器开销，没找到 PlayerLoop 行）";
+                            data.frameTimeSource = "面板 FrameDataView.frameTimeMs（含编辑器开销；PlayerLoop 行的读数不合理或找不到）";
                         return v;
                     }
                 }

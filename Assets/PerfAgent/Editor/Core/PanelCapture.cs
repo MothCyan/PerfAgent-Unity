@@ -198,6 +198,23 @@ namespace PerfAgent.Core
             }
 
             // ---- 帧耗时（来自抽样帧；百分比只代表抽样）----
+            //
+            // 闸门：面板列语义是反推的，一旦把别的列当成耗时列，会算出几十亿 ms 这种荒谬值；
+            // 宁可没有帧耗时，也不把垃圾读数变成「严重：帧耗时超预算」。
+            int implausible = 0;
+            for (int i = 0; i < data.samples.Count; i++)
+                if (!ProfilerPanel.IsPlausibleFrameMs(data.samples[i].deltaMs)) implausible++;
+            if (implausible > 0)
+            {
+                data.samples.RemoveAll(delegate (FrameStat f) { return !ProfilerPanel.IsPlausibleFrameMs(f.deltaMs); });
+                s.AddNote("丢弃了 " + implausible + " 帧不合理的帧耗时读数（超出 0~"
+                          + ProfilerPanel.MaxPlausibleFrameMs.ToString("0", CultureInfo.InvariantCulture)
+                          + " ms）：面板列语义与预期不一致，已按读不到处理。可运行 API 探针查看列内容。");
+            }
+
+            if (data.samples.Count == 0)
+                s.AddNote("没有可用的帧耗时读数：本次不给帧耗时相关指标与结论（帧率类判定全部跳过）。");
+
             if (data.samples.Count > 0)
             {
                 string src = "Profiler 面板抽样 " + data.samples.Count + "/" + data.frameCount + " 帧";

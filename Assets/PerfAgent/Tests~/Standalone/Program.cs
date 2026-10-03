@@ -59,6 +59,7 @@ namespace PerfAgent.RuleRegression
                 IsolatedStallIsNotReportedAsProjectJitter,
                 RepeatedSpikesWithoutCorroborationStayUnattributed,
                 SlowFramesWithAllocationSpikeAreAttributed,
+                AbsurdFrameTimeIsRejectedInsteadOfReported,
                 FrameDownsamplePreservesShapeAndBounds,
                 PlayModeTestJobProgressHandlesDurationMode,
                 ToolResultFolderFoldsWithoutBreakingPairs,
@@ -263,6 +264,28 @@ namespace PerfAgent.RuleRegression
             Equal(8713667L, ProfilerColumnLayout.ParseBytes("8.31 MB"), "megabytes");
             Equal(4L, ProfilerColumnLayout.ParseCount("4"), "calls");
             Equal(0L, ProfilerColumnLayout.ParseCount("N/A"), "unknown calls");
+        }
+
+        /// <summary>
+        /// 荒谬的帧耗时读数不能变成「严重：帧耗时超预算」。
+        /// 实测：面板列语义错位，把一列字节数当成耗时列，算出 3627373035 ms/帧，
+        /// 然后被报成严重结论 —— 这条用例钉死这个行为。
+        /// </summary>
+        static void AbsurdFrameTimeIsRejectedInsteadOfReported()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.SetMetric("帧耗时均值", "ms", 3627372582.23, "Profiler 面板抽样 60/300 帧");
+            for (int i = 0; i < 60; i++)
+                snapshot.frames.Add(new FrameStat { frame = 1965 + i * 5, deltaMs = 3627372052.48 + i });
+
+            True(Findings(snapshot, "frame_time_over").Count == 0,
+                "absurd frame time must not become an error finding");
+            True(Findings(snapshot, "frame_time_jitter").Count == 0,
+                "absurd frame time must not become a jitter finding");
+            True(Findings(snapshot, "spike_attribution").Count == 0,
+                "absurd frame time must not produce spike attribution");
+            True(snapshot.notes.Exists(n => n.IndexOf("不合理", StringComparison.Ordinal) >= 0),
+                "the snapshot must explain why frame time was skipped");
         }
 
         static void ExcessiveDrawCalls()

@@ -56,6 +56,18 @@ namespace PerfAgent.Analysis
             double max = s.FrameTimeMaxMs();
             string src = string.Format(CultureInfo.InvariantCulture, "Profiler 面板/{0} 帧（逐帧明细为抽样）", s.frames.Count);
 
+            // 合理性闸门：读数荒谬时不产出任何帧率结论。
+            // 实测踩过：面板列语义错位，把一列字节数当成耗时列，算出 36 亿 ms/帧，
+            // 然后被报成「严重：帧耗时 P95 超出预算」。宁可没有结论，也不输出这种垃圾。
+            if (avgM.value > MaxPlausibleFrameMs || p95 > MaxPlausibleFrameMs || max > MaxPlausibleFrameMs)
+            {
+                s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                    "帧耗时读数不合理（均值 {0:0.#} ms / P95 {1:0.#} ms / 峰值 {2:0.#} ms，上限 {3:0} ms），"
+                    + "已跳过全部帧率类结论。这通常是数据来源的列语义对不上 —— 先跑 Tools/PerfAgent/API 探针 核对列内容。",
+                    avgM.value, p95, max, MaxPlausibleFrameMs));
+                return;
+            }
+
             if (budgetMs > 0 && p95 > budgetMs)
             {
                 var f = New("frame_time_over", "帧率", Severity.Error,
@@ -138,7 +150,11 @@ namespace PerfAgent.Analysis
 
         /// <summary>低于 30 FPS 的帧才叫「卡顿尖峰」；比这更快的帧不构成需要报警的抖动。</summary>
         const double JitterFloorMs = 33.0;
-
+        /// <summary>
+        /// 单帧耗时的合理上限（毫秒）。超过它一律当成「读数不对」而不是「游戏很卡」：
+        /// 2 秒一帧已经离谱到不可能是真实帧耗时，只可能是列语义错位读错了列。
+        /// </summary>
+        public const double MaxPlausibleFrameMs = 2000.0;
         static int CountFramesAbove(PerfSnapshot s, double thresholdMs)
         {
             int n = 0;
