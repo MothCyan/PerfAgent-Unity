@@ -51,6 +51,55 @@ namespace PerfAgent.Core
         public static readonly Type FrameDataView = Reflect.FindType("UnityEditor.Profiling.FrameDataView");
         static readonly Type ViewModes = Reflect.NestedType(HierarchyView, "ViewModes");
 
+        /// <summary>
+        /// 视图模式候选名 —— 不同版本成员命名不同，不能写死：
+        ///   2019/2020：Tree / Flat
+        ///   2022 起  ：Default / MergeSamplesWithTheSameName / HideEditorOnlySamples（**没有 Tree**）
+        /// 按顺序取第一个存在的成员；<c>Default</c> 就是「树形展开」，语义等价于旧版的 Tree。
+        /// 参考资料：本机 2022.3.62f2c1 的 ViewModes = Default=0, MergeSamplesWithTheSameName=1, HideEditorOnlySamples=2。
+        /// </summary>
+        static readonly string[] ViewModeNames = { "Tree", "Default", "Flat" };
+        static object[] _viewModes;
+        static string _lastHierarchyError;
+
+        /// <summary>最近一次 GetHierarchyView 取视图失败的原因（成功时为 null），用于把采集失败写成可定位的 notes。</summary>
+        public static string LastHierarchyError { get { return _lastHierarchyError; } }
+
+        /// <summary>本机 ViewModes 实际存在的成员名（探针用）。</summary>
+        public static string DescribeViewModes()
+        {
+            if (ViewModes == null) return "缺失";
+            try { return string.Join(" / ", Enum.GetNames(ViewModes)); }
+            catch { return "读取失败"; }
+        }
+
+        static object[] ResolveViewModes()
+        {
+            if (_viewModes != null) return _viewModes;
+
+            var list = new List<object>();
+            if (ViewModes != null && ViewModes.IsEnum)
+            {
+                for (int i = 0; i < ViewModeNames.Length; i++)
+                {
+                    try { list.Add(Enum.Parse(ViewModes, ViewModeNames[i])); }
+                    catch { /* 该版本没有这个名字，跳过 */ }
+                }
+                if (list.Count == 0)
+                {
+                    // 兜底：枚举声明顺序的第一个成员（多数版本是数值 0）
+                    try
+                    {
+                        var names = Enum.GetNames(ViewModes);
+                        if (names.Length > 0) list.Add(Enum.Parse(ViewModes, names[0]));
+                    }
+                    catch { }
+                }
+            }
+            _viewModes = list.ToArray();
+            return _viewModes;
+        }
+
         /// <summary>抓帧（FrameDataView）能力是否可用。</summary>
         public static bool CanReadFrames { get { return Driver != null && HierarchyView != null; } }
 
@@ -125,24 +174,67 @@ namespace PerfAgent.Core
             return r;
         }
 
-        /// <summary>取得指定帧的主线程 Hierarchy 视图；不可用返回 null。</summary>
+        /// <summary>
+        /// 取得指定帧的主线程 Hierarchy 视图；不可用返回 null。
+        /// 本机只有 5 参数重载 GetHierarchyFrameDataView(frameIndex, threadIndex, viewMode, sortColumn, sortAscending)，
+        /// 没有 2 参数重载，也没有 forceCollect —— 老代码在 viewMode 解析失败后回退到 2 参数重载必然拿到 null，
+        /// 所以这里改成「逐个候选 viewMode × sortColumn 尝试」，任一成功即返回。
+        /// </summary>
         public static object GetHierarchyView(int frameIndex, int threadIndex = 0)
         {
-            if (Driver == null || HierarchyView == null) return null;
+            _lastHierarchyError = null;
 
-            object mode = null;
-            if (ViewModes != null && ViewModes.IsEnum)
+            if (Driver == null || HierarchyView == null)
             {
-                try { mode = Enum.Parse(ViewModes, "Tree"); }
-                catch { mode = null; }
+                _lastHierarchyError = "ProfilerDriver / HierarchyFrameDataView 缺失";
+                return null;
+            }
+            if (frameIndex < 0)
+            {
+                _lastHierarchyError = "帧索引无效（" + frameIndex + "）";
+                return null;
             }
 
-            object r = null;
-            if (mode != null)
-                r = Reflect.InvokeStatic(Driver, "GetHierarchyFrameDataView", frameIndex, threadIndex, mode, 0, true);
-            if (r == null)
-                r = Reflect.InvokeStatic(Driver, "GetHierarchyFrameDataView", frameIndex, threadIndex);
-            return r;
+            var modes = ResolveViewModes();
+            int modeCount = modes.Length == 0 ? 1 : modes.Length;
+            var sortColumns = new[] { 0, 2 };
+            object firstAny = null;
+
+            for (int m = 0; m < modeCount; m++)
+            {
+                object mode = modes.Length == 0 ? null : modes[m];
+                for (int s = 0; s < sortColumns.Length; s++)
+                {
+                    object v = null;
+                    if (mode != null)
+                    {
+                        v = Reflect.InvokeStatic(Driver, "GetHierarchyFrameDataView",
+                                                 frameIndex, threadIndex, mode, sortColumns[s], true);
+                    }
+                    if (v == null)
+                    {
+                        // 兼容早期版本可能存在的 2 参数重载
+                        v = Reflect.InvokeStatic(Driver, "GetHierarchyFrameDataView", frameIndex, threadIndex);
+                    }
+                    if (v == null) continue;
+
+                    if (firstAny == null) firstAny = v;
+
+                    bool valid;
+                    if (!Reflect.TryGetBool(v, "valid", out valid) || valid)
+                        return v;
+                }
+            }
+
+            if (firstAny != null)
+            {
+                _lastHierarchyError = "视图取到但 valid=false（该帧没有记录到 FrameDataView 数据）";
+                return firstAny;
+            }
+
+            _lastHierarchyError = "GetHierarchyFrameDataView 调用失败（ViewModes 候选: " + DescribeViewModes()
+                                  + "；已试 sortColumn 0/2）";
+            return null;
         }
 
         /// <summary>取得指定帧的原始采样视图；不可用返回 null。</summary>
@@ -242,7 +334,8 @@ namespace PerfAgent.Core
             sb.Append("ProfilerDriver: ").Append(Driver != null ? "OK" : "缺失").Append('\n');
             sb.Append("HierarchyFrameDataView: ").Append(HierarchyView != null ? "OK" : "缺失").Append('\n');
             sb.Append("RawFrameDataView: ").Append(RawView != null ? "OK" : "缺失").Append('\n');
-            sb.Append("FrameDataView: ").Append(FrameDataView != null ? "OK" : "缺失").Append('\n');
+            sb.Append("FrameDataView: ").Append(FrameDataView != null ? "OK" : "缺失")
+              .Append(" | ViewModes: ").Append(DescribeViewModes()).Append('\n');
             if (Driver != null)
             {
                 sb.Append("  enabled: ").Append(Prop(Driver, "enabled") ? "OK" : "-")
@@ -254,6 +347,8 @@ namespace PerfAgent.Core
                   .Append(" | GetHierarchyFrameDataView: ").Append(Reflect.Method(Driver, "GetHierarchyFrameDataView", -1, true) != null ? "OK" : "-")
                   .Append('\n');
             }
+            if (!string.IsNullOrEmpty(_lastHierarchyError))
+                sb.Append("最近一次取视图失败: ").Append(_lastHierarchyError).Append('\n');
             return sb.ToString();
         }
 

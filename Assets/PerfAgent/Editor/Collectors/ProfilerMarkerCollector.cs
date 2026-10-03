@@ -59,7 +59,12 @@ namespace PerfAgent.Collectors
 
             if (collected.Count == 0)
             {
-                s.AddNote("未能从 Profiler 层级视图解析出 marker（该版本 API 形态可能不同，请运行 API 探针）。");
+                var why = ProfilerApi.LastHierarchyError;
+                s.AddNote("未能从 Profiler 层级视图解析出 marker"
+                          + (string.IsNullOrEmpty(why)
+                              ? "（视图可用，但各列内容都没能识别出耗时/分配/调用次数）"
+                              : "：" + why)
+                          + "。可用 Tools/PerfAgent/API 探针 查看本机 API 形态。");
                 return;
             }
 
