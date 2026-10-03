@@ -122,6 +122,20 @@ namespace PerfAgent.Core
             }
         }
 
+        /// <summary>
+        /// 编辑器自身是否在被分析（<c>ProfilerDriver.profileEditor</c>）。
+        ///
+        /// **非 Play 模式下必须为 true**：只把 <see cref="Enabled"/> 打开的话，Profiler 面板
+        /// 根本不记录编辑器帧，<see cref="LastFrameIndex"/> 一动不动 ——
+        /// 表现就是「编辑器空转期间面板只录到 0 帧」（实测踩过这个坑）。
+        /// Play 模式记录的是播放器帧，不需要它；用完记得还原用户原来的设置。
+        /// </summary>
+        public static bool ProfileEditor
+        {
+            get { var v = Reflect.GetStatic(Driver, "profileEditor"); return v is bool && (bool)v; }
+            set { Reflect.SetStatic(Driver, "profileEditor", value); }
+        }
+
         public static int FirstFrameIndex
         {
             get { var v = Reflect.GetStatic(Driver, "firstFrameIndex"); return v == null ? -1 : SafeInt(v); }
