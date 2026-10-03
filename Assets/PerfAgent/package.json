@@ -1,0 +1,25 @@
+{
+  "name": "com.night.perfagent",
+  "version": "0.1.0",
+  "displayName": "Performance Agent",
+  "description": "Unity 内置性能排查 AI Agent：采集 -> 规则分析 -> 证据链报告 -> 可对话诊断。零第三方依赖。",
+  "unity": "2021.3",
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Diagnostic Snapshot",
+      "description": "可用于了解 PerfSnapshot 数据结构的诊断快照示例。",
+      "path": "Samples~/DiagnosticSnapshot"
+    }
+  ],
+  "keywords": [
+    "profiler",
+    "performance",
+    "diagnostics",
+    "ai",
+    "agent"
+  ],
+  "author": {
+    "name": "Night"
+  }
+}

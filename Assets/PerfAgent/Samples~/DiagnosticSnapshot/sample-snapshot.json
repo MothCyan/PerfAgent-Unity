@@ -1,0 +1,24 @@
+{
+  "id": "sample_001",
+  "label": "诊断快照示例",
+  "capturedUtc": "2026-01-01T00:00:00.0000000Z",
+  "unityVersion": "2022.3",
+  "platform": "WindowsEditor",
+  "targetFrameRate": 60,
+  "vSyncCount": 1,
+  "fixedDeltaTime": 0.02,
+  "physicsSimulationMode": "FixedUpdate",
+  "metrics": [
+    { "name": "帧耗时均值", "unit": "ms", "value": 8.2, "source": "示例数据" },
+    { "name": "每帧托管分配", "unit": "B", "value": 0, "source": "示例数据" },
+    { "name": "Draw Calls", "unit": "次", "value": 120, "source": "示例数据" }
+  ],
+  "frames": [],
+  "markers": [],
+  "assetIssues": [],
+  "sceneIssues": [],
+  "codeIssues": [],
+  "findings": [],
+  "notes": ["该文件仅用于展示序列化结构，不代表实测结果。"],
+  "capturedSources": ["sample"]
+}

@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------
+# Unity 工程标准忽略规则
+# 说明：Library/ Temp/ Logs/ UserSettings/ 全部是 Unity 本机生成的缓存，
+#       *.csproj / *.sln 也由 Unity 每次刷新时重新生成，都不该入库。
+# ---------------------------------------------------------------
+
+# Unity 生成目录
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# Unity 自动生成的工程/解决方案文件
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.opendb
+*.VC.db
+
+# IDE
+.vs/
+.idea/
+*.DotSettings.user
+
+# 构建与导出产物
+/[Aa]ssets/[Aa]ssetStoreTools*
+/[Ee]xportedObj/
+crashlytics-build.properties
+sysinfo.txt
+
+# 子工程（如 Tests~/Standalone）的编译输出
+**/bin/
+**/obj/
+
+# 编辑器崩溃/临时文件
+*.stackdump
+*.tmp
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 本机备份
+manifest.json.bak
