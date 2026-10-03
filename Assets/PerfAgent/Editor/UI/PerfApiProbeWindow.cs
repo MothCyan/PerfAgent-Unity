@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using PerfAgent.Core;
 using PerfAgent.Utils;
+using PerfAgent.Collectors;
 
 namespace PerfAgent.UI
 {
@@ -129,6 +130,19 @@ namespace PerfAgent.UI
                             sb.Append("  [").Append(col).Append("]=").Append(cell ?? "-");
                         }
                         sb.Append('\n');
+
+                        // 列语义是从内容反推的（该视图没有列名 API），这里把识别结果显示出来，
+                        // 免得下次又靠人肉看 [0]=xxx [1]=0.0% 去猜。
+                        var sampleRows = new List<string[]>();
+                        for (int i = 0; i < children.Count; i++)
+                        {
+                            var row = new string[ProfilerApi.GetColumnCount(view)];
+                            for (int col = 0; col < row.Length; col++)
+                                row[col] = ProfilerApi.GetItemColumn(view, children[i], col);
+                            sampleRows.Add(row);
+                        }
+                        var layout = ProfilerColumnLayout.Detect(sampleRows);
+                        sb.Append("  识别到的列语义：").Append(layout.Describe()).Append('\n');
                     }
                 }
             }

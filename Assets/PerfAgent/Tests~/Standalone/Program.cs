@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using PerfAgent.Agent;
 using PerfAgent.Analysis;
+using PerfAgent.Collectors;
 using PerfAgent.Core;
 using PerfAgent.Utils;
 
@@ -61,7 +62,10 @@ namespace PerfAgent.RuleRegression
                 FrameDownsamplePreservesShapeAndBounds,
                 PlayModeTestJobProgressHandlesDurationMode,
                 ToolResultFolderFoldsWithoutBreakingPairs,
-                CodePatternIsParsedBeforeMatching
+                CodePatternIsParsedBeforeMatching,
+                ColumnLayoutDetectsUnity2022HierarchyColumns,
+                ColumnLayoutParsesBareDecimalsAsTime,
+                ColumnLayoutParsesByteUnits
             };
 
             var failed = 0;
@@ -205,6 +209,60 @@ namespace PerfAgent.RuleRegression
             Evidence(attribution);
             True(attribution.recommendation.IndexOf("GC", StringComparison.Ordinal) >= 0,
                 "allocation-driven spikes should be described as GC-driven: " + attribution.recommendation);
+        }
+
+        /// <summary>
+        /// 钉死 Unity 2022.3 的 Hierarchy 视图列布局。
+        /// 行数据取自本机 API 探针的真实输出：
+        ///   [0]=EditorLoop [1]=0.0% [2]=0.0% [3]=1 [4]=0 B [5]=0.06 [6]=0.06 [7]=N/A
+        /// 旧实现只认带 "ms" 后缀的字符串，于是 [5][6] 全解析成 0，
+        /// 排行有 60 行却一条可用数据都没有 —— 这条用例就是专门固定这个 bug。
+        /// </summary>
+        static void ColumnLayoutDetectsUnity2022HierarchyColumns()
+        {
+            var rows = new List<string[]>
+            {
+                new[] { "EditorLoop", "0.0%", "0.0%", "1", "0 B", "0.06", "0.06", "N/A" },
+                new[] { "Camera.Render", "65.3%", "12.4%", "1", "1.2 KB", "3.42", "0.65", "N/A" },
+                new[] { "PlayerLoop", "70.1%", "0.2%", "1", "0 B", "3.67", "0.01", "N/A" },
+                new[] { "GC.Alloc", "3.1%", "3.1%", "17", "8.31 MB", "0.16", "0.16", "N/A" }
+            };
+
+            var layout = ProfilerColumnLayout.Detect(rows);
+            Equal(8, layout.columnCount, "column count");
+            True(layout.IsUsable, "layout must be usable");
+            Equal(3, layout.callsColumn, "calls column");
+            Equal(4, layout.gcAllocColumn, "gc alloc column");
+            Equal(2, layout.msColumns.Count, "time column count");
+            Equal(5, layout.msColumns[0], "first time column");
+            Equal(6, layout.msColumns[1], "second time column");
+            Equal(2, layout.percentColumns.Count, "percent column count");
+            Equal(1, layout.percentColumns[0], "first percent column");
+
+            // 名称列（[0]）不能被认成任何数值列
+            True(!layout.msColumns.Contains(0) && layout.callsColumn != 0 && layout.gcAllocColumn != 0,
+                "the name column must not be classified as numeric");
+        }
+
+        /// <summary>裸小数（无单位）必须被当成耗时 —— 这正是旧实现漏掉的情况。</summary>
+        static void ColumnLayoutParsesBareDecimalsAsTime()
+        {
+            Equal(0.06, ProfilerColumnLayout.ParseNumber("0.06"), "bare decimal");
+            Equal(1234.5, ProfilerColumnLayout.ParseNumber("1,234.5"), "thousands separator");
+            Equal(12.3, ProfilerColumnLayout.ParseNumber("12.3ms"), "with ms suffix");
+            Equal(0.0, ProfilerColumnLayout.ParseNumber("0.0%"), "percent");
+            True(double.IsNaN(ProfilerColumnLayout.ParseNumber("N/A")), "N/A must not become a number");
+            True(double.IsNaN(ProfilerColumnLayout.ParseNumber("")), "empty must not become a number");
+        }
+
+        /// <summary>字节列必须按单位换算，而不是当成裸数字。</summary>
+        static void ColumnLayoutParsesByteUnits()
+        {
+            Equal(0L, ProfilerColumnLayout.ParseBytes("0 B"), "zero bytes");
+            Equal(1229L, ProfilerColumnLayout.ParseBytes("1.2 KB"), "kilobytes");
+            Equal(8713667L, ProfilerColumnLayout.ParseBytes("8.31 MB"), "megabytes");
+            Equal(4L, ProfilerColumnLayout.ParseCount("4"), "calls");
+            Equal(0L, ProfilerColumnLayout.ParseCount("N/A"), "unknown calls");
         }
 
         static void ExcessiveDrawCalls()

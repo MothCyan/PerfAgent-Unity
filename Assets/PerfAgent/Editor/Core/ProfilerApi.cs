@@ -316,6 +316,8 @@ namespace PerfAgent.Core
 
         public static int GetColumnCount(object view)
         {
+            if (view == null) return 0;
+
             foreach (var name in new[] { "columnCount", "ColumnCount" })
             {
                 var v = Reflect.Get(view, name);
@@ -324,7 +326,30 @@ namespace PerfAgent.Core
                     try { return Convert.ToInt32(v); } catch { }
                 }
             }
-            return 8;
+
+            // 2022.3 已确认：视图上没有 columnCount（也没有列名 API），只能探 ——
+            // 拿根行的第一个子项逐列读文本，读到连续空列为止。
+            // 写死 8 在这个版本碰巧对，但换版本就会错位，所以改成探测。
+            int id = GetRootItemId(view);
+            var children = GetChildren(view, id);
+            if (children.Count > 0) id = children[0];
+
+            int lastNonEmpty = -1, emptyRun = 0;
+            for (int c = 0; c < 24; c++)
+            {
+                string cell = GetItemColumn(view, id, c);
+                if (string.IsNullOrEmpty(cell))
+                {
+                    emptyRun++;
+                    if (lastNonEmpty >= 0 && emptyRun >= 3) break;
+                }
+                else
+                {
+                    lastNonEmpty = c;
+                    emptyRun = 0;
+                }
+            }
+            return lastNonEmpty >= 0 ? lastNonEmpty + 1 : 8;
         }
 
         /// <summary>诊断信息，用于探针窗口与报告 notes。</summary>

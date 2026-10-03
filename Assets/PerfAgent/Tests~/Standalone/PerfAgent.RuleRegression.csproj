@@ -16,6 +16,7 @@
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
     <Compile Include="../../Editor/Core/PerfAgentSettings.cs" Link="Source/PerfAgentSettings.cs" />
     <Compile Include="../../Editor/Analysis/PerfRuleEngine.cs" Link="Source/PerfRuleEngine.cs" />
+    <Compile Include="../../Editor/Collectors/ProfilerColumnLayout.cs" Link="Source/ProfilerColumnLayout.cs" />
     <Compile Include="../../Editor/Analysis/PerfDiff.cs" Link="Source/PerfDiff.cs" />
     <Compile Include="../../Editor/Analysis/PerfFixPlan.cs" Link="Source/PerfFixPlan.cs" />
   </ItemGroup>

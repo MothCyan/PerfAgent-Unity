@@ -26,6 +26,12 @@ namespace PerfAgent.Collectors
 
         const int MaxItems = 400;
 
+        /// <summary>最近一次读取识别出的列语义（供提示与探针使用）。</summary>
+        internal static string LayoutText = "";
+
+        /// <summary>最近一次统计的范围（PlayerLoop 子树 / 全部）。</summary>
+        internal static string ScopeText = "";
+
         public void Collect(CollectorContext ctx)
         {
             var s = ctx.snapshot;
@@ -60,6 +66,7 @@ namespace PerfAgent.Collectors
             if (collected.Count == 0)
             {
                 var why = ProfilerApi.LastHierarchyError;
+                if (string.IsNullOrEmpty(why) && !string.IsNullOrEmpty(LayoutText)) why = "列语义识别结果：" + LayoutText;
                 s.AddNote("未能从 Profiler 层级视图解析出 marker"
                           + (string.IsNullOrEmpty(why)
                               ? "（视图可用，但各列内容都没能识别出耗时/分配/调用次数）"
@@ -78,16 +85,22 @@ namespace PerfAgent.Collectors
             if (!anyUseful)
             {
                 s.AddNote("Profiler 层级视图能打开，但 " + collected.Count + " 行里没有任何一行带耗时或分配数据"
-                          + "（该版本列语义与预期不同），已丢弃这份排行而不是展示空数据。可用 Tools/PerfAgent/API 探针 看列内容。");
+                          + (string.IsNullOrEmpty(LayoutText) ? "" : "（列语义识别结果：" + LayoutText + "）")
+                          + "，已丢弃这份排行而不是展示空数据。用 Tools/PerfAgent/API 探针 可看到每列的实际内容。");
                 return;
             }
 
             collected.Sort((a, b) => b.selfMs.CompareTo(a.selfMs));
             s.markers = collected;
 
+            if (!string.IsNullOrEmpty(ScopeText) && ScopeText.StartsWith("PlayerLoop", StringComparison.Ordinal))
+                s.AddNote("Marker 排行只统计 " + ScopeText + "。"
+                          + "编辑器的 Inspector / GUI / SceneView 开销不计入，否则会把编辑器自己的耗时算成项目热点。");
+
             var top = collected[0];
             if (top.selfMs > 0)
-                s.SetMetric("最耗时 Marker", "ms", top.selfMs, "HierarchyFrameDataView: " + top.name);
+                s.SetMetric("最耗时 Marker", "ms", top.selfMs,
+                    "HierarchyFrameDataView: " + top.name + "（" + ScopeText + "）");
         }
 
         List<MarkerStat> ReadFrame(int frameIndex, int topN)
@@ -101,9 +114,30 @@ namespace PerfAgent.Collectors
             int columns = ProfilerApi.GetColumnCount(view);
             if (columns < 2) columns = 8;
 
-            var result = new List<MarkerStat>();
+            // 编辑器的主线程层级里，编辑器开销（EditorLoop）与游戏逻辑（PlayerLoop）是并列的。
+            // 有 PlayerLoop 就只统计它 —— 这份排行是给「项目热点」用的，
+            // 不该把 Inspector / GUI / SceneView 的耗时算成项目的热点。
+            int startId = ProfilerApi.GetRootItemId(view);
+            var roots = ProfilerApi.GetChildren(view, startId);
+            string scope = "全部（未找到 PlayerLoop 子树）";
+            for (int i = 0; i < roots.Count; i++)
+            {
+                if (ProfilerApi.GetItemName(view, roots[i]) == "PlayerLoop")
+                {
+                    startId = roots[i];
+                    scope = "PlayerLoop 子树（已排除编辑器开销）";
+                    break;
+                }
+            }
+
+            // 1) 先把行读成文本（列语义必须从多行数据里统计，单行反推会认错列）
+            var ids = new List<int>();
+            var depths = new List<int>();
+            var names = new List<string>();
+            var cells = new List<string[]>();
+
             var queue = new Queue<KeyValuePair<int, int>>();
-            queue.Enqueue(new KeyValuePair<int, int>(ProfilerApi.GetRootItemId(view), 0));
+            queue.Enqueue(new KeyValuePair<int, int>(startId, 0));
             int visited = 0;
 
             while (queue.Count > 0 && visited < MaxItems)
@@ -117,131 +151,60 @@ namespace PerfAgent.Collectors
                 for (int i = 0; i < children.Count; i++)
                     queue.Enqueue(new KeyValuePair<int, int>(children[i], depth + 1));
 
-                if (depth == 0) continue; // 跳过根节点
+                if (depth == 0) continue; // 跳过根节点（PlayerLoop/整帧那一行）
 
-                var stat = ParseRow(view, id, columns);
-                if (stat == null) continue;
-                stat.depth = depth;
-                if (string.IsNullOrEmpty(stat.name) || stat.name == "(unknown)") continue;
+                var row = new string[columns];
+                for (int c = 0; c < columns; c++) row[c] = ProfilerApi.GetItemColumn(view, id, c);
+
+                ids.Add(id);
+                depths.Add(depth);
+                names.Add(ProfilerApi.GetItemName(view, id));
+                cells.Add(row);
+            }
+
+            if (ids.Count == 0) return null;
+
+            // 2) 识别列语义 → 按列类别取值
+            var layout = ProfilerColumnLayout.Detect(cells);
+            LayoutText = layout.Describe();
+            ScopeText = scope;
+
+            if (!layout.IsUsable) return null;
+
+            var result = new List<MarkerStat>(ids.Count);
+            for (int i = 0; i < ids.Count; i++)
+            {
+                string name = names[i];
+                if (string.IsNullOrEmpty(name) || name == "(unknown)") continue;
+
+                var stat = new MarkerStat();
+                stat.name = name;
+                stat.depth = depths[i];
+
+                // 耗时：可能有两列（Total / Self，实测都是裸小数）。Self ≤ Total 恒成立，
+                // 取小者作为自身耗时 —— 这样与该版本的列顺序无关，也不会把父节点的总耗时当自身耗时。
+                double self = double.NaN, total = double.NaN;
+                for (int k = 0; k < layout.msColumns.Count; k++)
+                {
+                    double v = ProfilerColumnLayout.ParseNumber(cells[i][layout.msColumns[k]]);
+                    if (double.IsNaN(v)) continue;
+                    if (double.IsNaN(self) || v < self) self = v;
+                    if (double.IsNaN(total) || v > total) total = v;
+                }
+                stat.selfMs = double.IsNaN(self) ? 0 : self;
+                stat.totalMs = double.IsNaN(total) ? stat.selfMs : total;
+
+                if (layout.gcAllocColumn >= 0)
+                    stat.gcAllocBytes = ProfilerColumnLayout.ParseBytes(cells[i][layout.gcAllocColumn]);
+                if (layout.callsColumn >= 0)
+                    stat.calls = ProfilerColumnLayout.ParseCount(cells[i][layout.callsColumn]);
+
                 result.Add(stat);
             }
 
             result.Sort((a, b) => b.selfMs.CompareTo(a.selfMs));
             if (topN > 0 && result.Count > topN) result.RemoveRange(topN, result.Count - topN);
             return result;
-        }
-
-        static MarkerStat ParseRow(object view, int id, int columns)
-        {
-            var stat = new MarkerStat();
-            stat.name = ProfilerApi.GetItemName(view, id);
-
-            double timeA = -1, timeB = -1;
-            long memBytes = 0;
-            long calls = 0;
-            bool any = false;
-
-            for (int col = 0; col < columns; col++)
-            {
-                string raw = ProfilerApi.GetItemColumn(view, id, col);
-                if (string.IsNullOrEmpty(raw)) continue;
-                string cell = raw.Trim();
-
-                double ms;
-                if (TryParseMs(cell, out ms))
-                {
-                    any = true;
-                    if (timeA < 0) timeA = ms;
-                    else if (timeB < 0) timeB = ms;
-                    continue;
-                }
-
-                long bytes;
-                if (TryParseBytes(cell, out bytes))
-                {
-                    any = true;
-                    if (bytes > memBytes) memBytes = bytes;
-                    continue;
-                }
-
-                long n;
-                if (TryParseCount(cell, out n))
-                {
-                    any = true;
-                    if (n > calls) calls = n;
-                }
-            }
-
-            if (!any) return null;
-
-            // 同一行里出现两个 ms 值时：较大的通常是 Total，较小的是 Self（Self <= Total 恒成立）
-            if (timeA >= 0 && timeB >= 0)
-            {
-                stat.totalMs = Math.Max(timeA, timeB);
-                stat.selfMs = Math.Min(timeA, timeB);
-            }
-            else if (timeA >= 0)
-            {
-                stat.selfMs = timeA;
-                stat.totalMs = timeA;
-            }
-
-            stat.gcAllocBytes = memBytes;
-            stat.calls = calls;
-            return stat;
-        }
-
-        static bool TryParseMs(string cell, out double ms)
-        {
-            ms = 0;
-            if (cell.EndsWith("ms", StringComparison.OrdinalIgnoreCase))
-                return double.TryParse(cell.Substring(0, cell.Length - 2).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out ms);
-            if (cell.EndsWith("s", StringComparison.OrdinalIgnoreCase) && cell.Length > 1
-                && !cell.EndsWith("us", StringComparison.OrdinalIgnoreCase))
-            {
-                double sec;
-                if (double.TryParse(cell.Substring(0, cell.Length - 1).Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out sec))
-                {
-                    ms = sec * 1000.0;
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        static bool TryParseBytes(string cell, out long bytes)
-        {
-            bytes = 0;
-            string upper = cell.ToUpperInvariant();
-            double factor = 0;
-            string numberPart = null;
-
-            if (upper.EndsWith("KB")) { factor = 1024; numberPart = cell.Substring(0, cell.Length - 2); }
-            else if (upper.EndsWith("MB")) { factor = 1024 * 1024; numberPart = cell.Substring(0, cell.Length - 2); }
-            else if (upper.EndsWith("GB")) { factor = 1024L * 1024 * 1024; numberPart = cell.Substring(0, cell.Length - 2); }
-            else if (upper.EndsWith("B") && upper.Length > 1 && !upper.EndsWith("KB") && !upper.EndsWith("MB"))
-            {
-                // 形如 "512B"，但 "1.2B" 也可能是别的单位，保守处理
-                numberPart = cell.Substring(0, cell.Length - 1);
-                factor = 1;
-            }
-
-            if (numberPart == null || factor <= 0) return false;
-            double v;
-            if (!double.TryParse(numberPart.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v)) return false;
-            bytes = (long)(v * factor);
-            return true;
-        }
-
-        static bool TryParseCount(string cell, out long count)
-        {
-            count = 0;
-            // 形如 "1,234" 或 "56"
-            string cleaned = cell.Replace(",", "").Replace(" ", "");
-            if (cleaned.Length == 0) return false;
-            for (int i = 0; i < cleaned.Length; i++)
-                if (!char.IsDigit(cleaned[i])) return false;
-            return long.TryParse(cleaned, NumberStyles.Integer, CultureInfo.InvariantCulture, out count);
         }
     }
 }
