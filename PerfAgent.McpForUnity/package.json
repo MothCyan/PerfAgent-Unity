@@ -4,6 +4,7 @@
   "displayName": "PerfAgent MCP Bridge",
   "description": "把 PerfAgent 的采集能力与只读诊断结论暴露给外部 MCP 客户端（Claude Desktop / VS Code Copilot 等）。需要先安装 MCP for Unity 包。刻意独立成包，是为了让 PerfAgent 主包保持零依赖。",
   "unity": "2021.3",
+  "licensesUrl": "https://github.com/MothCyan/PerfAgent-Unity/blob/main/LICENSE",
   "dependencies": {},
   "keywords": [
     "mcp",
@@ -13,6 +14,6 @@
     "ai"
   ],
   "author": {
-    "name": "Night"
+    "name": "MothCyan"
   }
 }
