@@ -15,6 +15,12 @@ namespace PerfAgent.Collectors
 {
     internal static class StatRecorder
     {
+        /// <summary>
+        /// GC 分配计数器的候选名（跨版本有差异，第一个有效者胜）。
+        /// 2022 叫 "GC Allocated In Frame"；它也是 Profiler 面板 GC Alloc 列的来源。
+        /// </summary>
+        public static readonly string[] GcAllocCounters = { "GC Allocated In Frame", "GC Alloc" };
+
         public static ProfilerRecorder Make(ProfilerCategory category, string stat, int capacity = 1)
         {
             try { return ProfilerRecorder.StartNew(category, stat, capacity); }

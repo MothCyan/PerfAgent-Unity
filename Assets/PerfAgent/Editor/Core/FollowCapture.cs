@@ -32,13 +32,13 @@ namespace PerfAgent.Core
         /// <summary>
         /// 单次跟随采集的帧数硬上限。
         ///
-        /// 「时长不限」不等于「内存不限」：一小时 60fps 大约 21 万帧（约 24MB），完全放得下；
-        /// 但如果 Game 视图被设成几千 fps，挂几个小时还是会把内存吃光。
-        /// 这里给一个足够宽松、又不至于撑爆的上限，到了就自动收尾。
+        /// 「时长不限」不等于「内存不限」：以前这里是 100 万帧（因为要自己存下每一帧），
+        /// 现在数据直接读 Profiler 面板，真正的上限是**面板自己的帧历史长度**（默认约两千帧），
+        /// 超过就被面板丢掉了 —— 这个常量只是安全阀。
         /// </summary>
-        public const int MaxFrames = 1000000;
+        public const int MaxFrames = 20000;
 
-        static FrameCapture _capture;
+        static PanelCapture _capture;
         static bool _armed;
 
         /// <summary>已待命，等下一次进入 Play。</summary>
@@ -149,9 +149,9 @@ namespace PerfAgent.Core
 
             _armed = false;
 
-            var capture = new FrameCapture(MaxFrames, delegate (List<FrameStat> frames)
+            var capture = new PanelCapture(MaxFrames, delegate (PanelCaptureData data)
             {
-                Complete(frames);
+                Complete(data);
             }, null);
 
             // 丢掉进入 Play 的头 1 秒：域重载 + 首次 Shader 编译 + 资源初始化都集中在那里，
@@ -188,7 +188,7 @@ namespace PerfAgent.Core
         // 收尾
         // =====================================================================
 
-        static void Complete(List<FrameStat> frames)
+        static void Complete(PanelCaptureData data)
         {
             _capture = null;
             PerfSession.Capturing = false;
@@ -200,12 +200,7 @@ namespace PerfAgent.Core
 
                 try { snap.scenePath = SceneManager.GetActiveScene().path; } catch { }
 
-                FrameCapture.Summarize(snap, frames);
-
-                if (FrameCapture.LastWarmupFramesDropped > 0)
-                    snap.AddNote("已丢弃开头 " + FrameCapture.LastWarmupFramesDropped
-                        + " 帧（进入 Play 后的前 1 秒）的启动抖动：那段含域重载、首次 Shader 编译与资源初始化，"
-                        + "不是项目的每帧开销，留在统计里会把峰值带偏。");
+                PanelCapture.Summarize(snap, data);
 
                 snap.AddNote("数据来自「跟随采集」：由你自己操作，采集从进入 Play 开始、"
                     + "到退出 Play（或手动停止）结束，没有固定时长。"

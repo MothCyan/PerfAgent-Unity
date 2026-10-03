@@ -13,10 +13,12 @@ namespace PerfAgent.Core
     public static class PerfPipeline
     {
         /// <summary>
-        /// 单次采集的帧数上限。30 万帧 @60fps ≈ 83 分钟，够跑完长流程；
-        /// 再长建议分多次采集 —— 否则单份快照的统计值会把不同关卡混在一起。
+        /// 单次分析的帧数上限。
+        ///
+        /// 真正的上限是 **Profiler 面板自己的帧历史长度**（默认约两千帧，可在 Profiler 窗口设置），
+        /// 超出部分会被面板丢弃 —— 这里只是一个不让自己录得太久的安全阀。
         /// </summary>
-        public const int MaxCaptureFrames = 300000;
+        public const int MaxCaptureFrames = 20000;
 
         /// <summary>单次采集的时长上限（秒）—— 1 小时。</summary>
         public const double MaxCaptureSeconds = 3600;
@@ -62,10 +64,10 @@ namespace PerfAgent.Core
         }
 
         /// <summary>采集 N 帧（异步，需要真实时间流逝），完成后回调。</summary>
-        public static FrameCapture CaptureFrames(int frames, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
+        public static PanelCapture CaptureFrames(int frames, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
         {
             var snap = CreateSnapshot(label);
-            var capture = new FrameCapture(frames, Finisher(snap, onDone), onProgress);
+            var capture = new PanelCapture(frames, Finisher(snap, onDone), onProgress);
             BeginAfterBaseline(capture);
             return capture;
         }
@@ -76,7 +78,7 @@ namespace PerfAgent.Core
         /// 用于「跑完一整个游戏流程」这类需求：流程长度是以秒描述的，
         /// 用帧数描述既不准（帧率变了就不是同一段时间）也难算。
         /// </summary>
-        public static FrameCapture CaptureFrames(int maxFrames, double seconds, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
+        public static PanelCapture CaptureFrames(int maxFrames, double seconds, Action<PerfSnapshot> onDone, Action<float> onProgress = null, string label = null)
         {
             var snap = CreateSnapshot(label);
 
@@ -84,7 +86,7 @@ namespace PerfAgent.Core
                 "本次为按时长采集：目标 {0:0.#} 秒（安全上限 {1} 帧）。时长模式下帧数由实际帧率决定，不固定。",
                 seconds, maxFrames));
 
-            var capture = new FrameCapture(maxFrames, seconds, Finisher(snap, onDone), onProgress);
+            var capture = new PanelCapture(maxFrames, seconds, Finisher(snap, onDone), onProgress);
             BeginAfterBaseline(capture);
             return capture;
         }
@@ -97,7 +99,7 @@ namespace PerfAgent.Core
         /// 已经在 Play 里时测不到基线，直接开始并如实降级：本次不对该指标下结论。
         /// 注意返回的 handle 仍然是立即可用的，只是 Start 会晚 ~0.4 秒。
         /// </summary>
-        static void BeginAfterBaseline(FrameCapture capture)
+        static void BeginAfterBaseline(PanelCapture capture)
         {
             double value;
             string why;
@@ -116,12 +118,12 @@ namespace PerfAgent.Core
         }
 
         /// <summary>采集结束后的统一收尾：汇总 → 跑采集器 → 分析 → 落盘 → 设为当前快照。</summary>
-        static Action<List<FrameStat>> Finisher(PerfSnapshot snap, Action<PerfSnapshot> onDone)
+        static Action<PanelCaptureData> Finisher(PerfSnapshot snap, Action<PerfSnapshot> onDone)
         {
-            return delegate (List<FrameStat> list)
+            return delegate (PanelCaptureData data)
             {
                 PerfSession.Capturing = false;
-                FrameCapture.Summarize(snap, list);
+                PanelCapture.Summarize(snap, data);
                 RunCollectors(snap, false, null);
                 Analyze(snap);
 

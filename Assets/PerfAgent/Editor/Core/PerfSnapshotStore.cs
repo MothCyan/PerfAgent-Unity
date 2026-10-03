@@ -41,7 +41,30 @@ namespace PerfAgent.Core
 
             string path = Path.Combine(RootDir, snapshot.id + ".json");
             File.WriteAllText(path, JsonUtility.ToJson(snapshot, true));
+            Prune();
             return path;
+        }
+
+        /// <summary>
+        /// 只保留最近 N 个快照（N 取 <see cref="PerfBudget.keepSnapshots"/>，0 = 不清理）。
+        ///
+        /// 以前每个快照要存几千帧的逐帧数组（一份几百 KB），长期跑会把 ProjectSettings 撞大；
+        /// 现在数据直接读 Profiler 面板，快照本身已经瘦下来了，再加上保留策略就不会无限增长。
+        /// </summary>
+        static void Prune()
+        {
+            int keep = PerfAgentSettings.Config.budget.keepSnapshots;
+            if (keep <= 0) return;
+
+            try
+            {
+                var all = List();          // 新的在前
+                for (int i = keep; i < all.Count; i++) Delete(all[i]);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[PerfAgent] 清理旧快照失败: " + e.Message);
+            }
         }
 
         public static List<string> List()

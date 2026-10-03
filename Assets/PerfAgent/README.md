@@ -24,7 +24,8 @@
 **开始使用**
 
 1. 菜单 `Tools > PerfAgent > 打开性能诊断面板`
-2. 点「抓帧并分析」——默认 300 帧，编辑器内约几秒
+2. 点「采集并分析」——工具会把 Profiler 打开并记录，默认跑够 300 帧就自动分析
+   （数据直接读 Profiler 面板已记录的帧，工具自己不做逐帧采样，见下节）
 3. 看「结论」标签：每条都带证据链、置信度、修复建议
 4. 想启用对话追问：点面板右上角「LLM 配置」填 Endpoint / 模型 / API Key（内置常见服务商预设与测试连接）
 5. 没配 LLM 也能用：规则引擎独立产出完整报告（点「导出 HTML」）
@@ -157,11 +158,37 @@ Unity 的 Profiler 窗口有一部分数据来自引擎内部接口，第三方�
 | 级别 | 数据 | 来源 | 拿不到时的行为 |
 |---|---|---|---|
 | **确定性**（不依赖 Profiler） | 资源导入问题、场景/物理反模式、代码反模式、预算比对 | `AssetImporter` / 场景遍历 / 文本扫描 | 不适用，全部是确定性结果 |
-| **实测·公开 API** | 总分配/保留内存、Mono 堆、TempAllocator、GPU 驱动内存、Draw Call / Batches / SetPass / Triangles、GC 分配、帧间隔 | `Profiler.GetXxx`、`ProfilerRecorder`、`Stopwatch` | 计数器 `Valid == false` 时**不写该指标**，并在「提示」里说明原因 |
+| **实测·公开 API** | 总分配/保留内存、Mono 堆、TempAllocator、GPU 驱动内存、Draw Call / Batches / SetPass / Triangles、GC 分配、帧耗时 | `Profiler.GetXxx`（即时读数）、**Profiler 面板帧历史**（序列数据） | 计数器 `Valid == false` 时**不写该指标**，并在「提示」里说明原因 |
 | **实验性·内部 API** | Marker 排行（自身耗时 / GC 分配 / 调用次数） | `UnityEditorInternal.ProfilerDriver` + `HierarchyFrameDataView`（internal，走反射） | 解析不出就返回空 + 写原因，绝不产生错误数据 |
 
 每条结论都带证据链，证据含 `tool` / `metric` / `value` / `source`，其中 `source` 就是上表里的具体 API 名，
 可以直接对照 Unity 文档复核。菜单 `Tools > PerfAgent > API 探针` 会逐个探测本机实际可用的成员与计数器。
+
+### 数据从哪来：Profiler 面板，而不是自己采样
+
+以前的做法是工具自己逐帧采样（`EditorApplication.update` + `Stopwatch` + `GC.GetTotalMemory` +
+`ProfilerRecorder`）。长期跑有三个问题，所以已改成**只读 Profiler 面板已记录的数据**：
+
+| 问题 | 自采样 | 读面板 |
+|---|---|---|
+| 测量污染 | 采样回调本身就在给编辑器加开销，而它要测的正是「每帧开销」 | 分析时一次性读取，不介入运行 |
+| 内存 | 跟随采集原上限 100 万帧，要一直维护帧缓冲 | 无缓冲，序列由面板持有 |
+| 帧耗时口径 | `Stopwatch` 量编辑器 update 间隔，把编辑器停顿也算进去 | 面板 `HierarchyFrameDataView` 的 **PlayerLoop 行总耗时**，不含编辑器开销 |
+
+具体映射：
+
+```
+帧范围      ProfilerDriver.firstFrameIndex / lastFrameIndex
+整段序列    GetCounterValuesBatchByCategory(category, name, firstFrame, scale, buffer, ref max)
+            → Memory/GC Allocated In Frame、Render/Draw Calls Count 等，窗口内每一帧都有值
+单帧耗时    HierarchyFrameDataView 里 PlayerLoop 行的总耗时（取不到时退回 frameTimeMs，并注明）
+逐帧明细    HierarchyFrameDataView（均匀抽样，默认最多 300 帧；热点排行只看 PlayerLoop 子树）
+```
+
+代价：**帧耗时分位是抽样统计**（默认 300/窗口帧数，会写在 `source` 里）；
+面板帧历史默认约两千帧，超过就被面板丢掉；逐帧「GC 次数」与「TempAllocator 增长」
+两个口径随自采样一起移除（面板没有这两个序列，会在快照提示里说明），
+现在判断 GC 看的是「每帧分配 P95」与帧耗时尖峰。
 
 **口径交叉校验**：托管分配同时用两条独立路径采集 ——
 `ProfilerRecorder「GC Allocated In Frame」`（与 Profiler 窗口 GC Alloc 同源，主口径）
@@ -443,6 +470,9 @@ MCP 连接会被切断，单次调用不可能阻塞等待几十秒。任务状�
 |---|---|---|
 | 编辑器内测量 | 数据包含编辑器自身开销，绝对帧耗时不可直接对标真机；每帧分配已扣除「编辑器开销基线」，但基线在编辑模式测、采集在 Play 模式，残差是估算值；帧耗时抖动需游戏侧佐证或反复出现才下结论 | 用 Development Build + Autoconnect Profiler；`ProfilerRecorder` 可打包进 Player |
 | 扫描范围 | 脚本反模式只扫**会进到构建里**的脚本：插件自身安装目录、`Editor/` 目录、Editor-only 程序集、`Packages/` 全部跳过 | 空工程应得到 0 条代码问题；若扫到了插件自己的代码，那是 bug |
+| 面板帧历史长度 | 一次采集能分析的帧数上限 = Profiler 面板自己的历史长度（默认约两千帧） | 在 Profiler 窗口把历史长度调大；或分多次采集分段分析 |
+| 帧耗时是抽样统计 | 逐帧明细默认最多抽 300 帧（分位/峰值基于抽样），整段序列（分配 / Draw Call）则是全量 | 需要逐帧精确分位时把 `ProfilerPanel.MaxSamples` 调大（帧越多读面板越慢） |
+| 快照保留 | 默认只保留最近 20 个快照（`保留快照个数` 可改，0 = 不清理） | 要长期留档就改设置或自行备份 |
 | Marker 采集是实验性的 | `HierarchyFrameDataView` 没有列名 / 列数 API，列语义只能从内容反推（实测 2022.3：`[1][2]` 百分比、`[3]` 调用次数、`[4]` GC Alloc、`[5][6]` 耗时且是**裸小数没有 ms 后缀**） | 已改为「先从多行内容识别列类型，再按类型取值」，并用探针实测数据写了回归用例；排行只统计 `PlayerLoop` 子树，不把编辑器开销算成项目热点 |
 | 内存估算 | 纹理内存按导入设置推算（含 mipmap 增量），不是实测加载值 | 需要精确值时用 Memory Profiler 包 |
 | 域重载 | 脚本重编译会重置对话历史 | 对话已落盘到 `ProjectSettings/PerfAgent/Conversations`，重开面板自动恢复上下文；不要恢复时点「新会话」 |

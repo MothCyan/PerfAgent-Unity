@@ -38,7 +38,7 @@ namespace PerfAgent.Collectors
 
     public static class CollectorRegistry
     {
-        /// <summary>所有「可独立运行」的采集器。帧采样由 FrameCapture 单独编排。</summary>
+        /// <summary>所有「可独立运行」的采集器。帧数据由 PanelCapture 从 Profiler 面板读取（不再自采样）。</summary>
         public static List<IPerfCollector> All()
         {
             return new List<IPerfCollector>

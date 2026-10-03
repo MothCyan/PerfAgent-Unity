@@ -54,7 +54,7 @@ namespace PerfAgent.Analysis
             double budgetMs = b.FrameBudgetMs();
             double p95 = s.FrameTimePercentileMs(95);
             double max = s.FrameTimeMaxMs();
-            string src = string.Format(CultureInfo.InvariantCulture, "FrameCapture/{0} 帧", s.frames.Count);
+            string src = string.Format(CultureInfo.InvariantCulture, "Profiler 面板/{0} 帧（逐帧明细为抽样）", s.frames.Count);
 
             if (budgetMs > 0 && p95 > budgetMs)
             {

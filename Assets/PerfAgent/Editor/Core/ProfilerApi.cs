@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Reflection;
 using System.Text;
 using PerfAgent.Utils;
 using UnityEngine.Profiling;
@@ -350,6 +352,84 @@ namespace PerfAgent.Core
                 }
             }
             return lastNonEmpty >= 0 ? lastNonEmpty + 1 : 8;
+        }
+
+        // =====================================================================
+        // Profiler 面板序列（不自己逐帧采样，直接读面板已记录的数据）
+        //
+        // 面板的图表 / 计数器本质上都是「一帧一个值」的序列，Unity 给了批量读取接口：
+        //   GetCounterValuesBatchByCategory(String category, String name, Int32 firstFrame,
+        //                                   Single scale, Single[] buffer, ref Single maxValue)
+        //   GetStatisticsValues(Int32 identifier, Int32 firstFrame, Single scale,
+        //                       Single[] buffer, ref Single maxValue)
+        // 两者最后一个参数都是 ref Single —— 走 Reflect 的自动转换会丢掉回写（CoerceArgs 会新建数组），
+        // 所以这里直接拿 MethodInfo.Invoke 调用。
+        // =====================================================================
+
+        static MethodInfo _counterSeriesMethod;
+        static MethodInfo _statisticsSeriesMethod;
+        static string[] _statisticsProperties;
+
+        static MethodInfo FindMethod(string name, int argCount, Type firstArgType, Type bufferType)
+        {
+            if (Driver == null) return null;
+            var methods = Driver.GetMethods(Reflect.StaticAll);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                var m = methods[i];
+                if (m.Name != name) continue;
+                var ps = m.GetParameters();
+                if (ps.Length != argCount) continue;
+                if (firstArgType != null && ps[0].ParameterType != firstArgType) continue;
+                if (bufferType != null && ps[argCount - 2].ParameterType != bufferType) continue;
+                return m;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 读一段计数器序列（与 Profiler 面板图表同源）。category/name 用 ProfilerRecorder 那套名字，
+        /// 例如 ("Memory", "GC Allocated In Frame")、("Render", "Draw Calls Count")。
+        /// </summary>
+        public static bool ReadCounterSeries(string category, string name, int firstFrame, float[] buffer)
+        {
+            if (Driver == null || buffer == null || buffer.Length == 0) return false;
+            if (_counterSeriesMethod == null)
+                _counterSeriesMethod = FindMethod("GetCounterValuesBatchByCategory", 6, typeof(string), typeof(float[]));
+            if (_counterSeriesMethod == null) return false;
+
+            object[] args = { category, name, firstFrame, 1f, buffer, 0f };
+            try { _counterSeriesMethod.Invoke(null, args); return true; }
+            catch { return false; }
+        }
+
+        /// <summary>读一段统计序列（面板图表的属性序列，如 CPU 帧耗时）。</summary>
+        public static bool ReadStatisticSeries(int identifier, int firstFrame, float[] buffer)
+        {
+            if (Driver == null || identifier == 0 || buffer == null || buffer.Length == 0) return false;
+            if (_statisticsSeriesMethod == null)
+                _statisticsSeriesMethod = FindMethod("GetStatisticsValues", 5, typeof(int), typeof(float[]));
+            if (_statisticsSeriesMethod == null) return false;
+
+            object[] args = { identifier, firstFrame, 1f, buffer, 0f };
+            try { _statisticsSeriesMethod.Invoke(null, args); return true; }
+            catch { return false; }
+        }
+
+        /// <summary>面板可选的全部统计属性名（含 CPU 帧耗时之类的序列）。</summary>
+        public static string[] AllStatisticsProperties()
+        {
+            if (_statisticsProperties == null)
+                _statisticsProperties = Reflect.InvokeStatic(Driver, "GetAllStatisticsProperties") as string[] ?? new string[0];
+            return _statisticsProperties;
+        }
+
+        /// <summary>统计属性名 → identifier；0 表示未注册。</summary>
+        public static int StatisticsIdentifier(string property)
+        {
+            var v = Reflect.InvokeStatic(Driver, "GetStatisticsIdentifier", property);
+            if (v == null) return 0;
+            try { return Convert.ToInt32(v); } catch { return 0; }
         }
 
         /// <summary>诊断信息，用于探针窗口与报告 notes。</summary>

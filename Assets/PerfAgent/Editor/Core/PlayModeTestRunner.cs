@@ -34,7 +34,7 @@ namespace PerfAgent.Core
         const double ProgressWriteInterval = 0.5;
 
         static PlayModeTestJob _job;
-        static FrameCapture _capture;
+        static PanelCapture _capture;
         static int _warmupStartFrame;
         static double _deadline;
         static double _nextProgressWrite;
@@ -340,16 +340,16 @@ namespace PerfAgent.Core
             PerfSession.Capturing = true;
             job.captureStartedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
-            Action<List<FrameStat>> done = delegate (List<FrameStat> frames) { OnCaptureDone(job, frames); };
+            Action<PanelCaptureData> done = delegate (PanelCaptureData data) { OnCaptureDone(job, data); };
 
             _capture = job.durationSeconds > 0
-                ? new FrameCapture(job.captureFrames, job.durationSeconds, done, null)
-                : new FrameCapture(job.captureFrames, done, null);
+                ? new PanelCapture(job.captureFrames, job.durationSeconds, done, null)
+                : new PanelCapture(job.captureFrames, done, null);
 
             _capture.Start();
         }
 
-        static void OnCaptureDone(PlayModeTestJob job, List<FrameStat> frames)
+        static void OnCaptureDone(PlayModeTestJob job, PanelCaptureData data)
         {
             _capture = null;
             PerfSession.Capturing = false;
@@ -362,18 +362,17 @@ namespace PerfAgent.Core
                     string.IsNullOrEmpty(job.label) ? ("Play 模式自动测试 " + job.id) : job.label);
                 snap.scenePath = SceneManager.GetActiveScene().path;
 
-                FrameCapture.Summarize(snap, frames);
+                PanelCapture.Summarize(snap, data);
                 snap.AddNote(job.durationSeconds > 0
                     ? string.Format(CultureInfo.InvariantCulture,
-                        "数据来自自动 Play 模式测试：先丢弃 {0} 帧启动抖动，再连续采集 {1:0.#} 秒（{2} 帧，"
-                        + "实际帧率 {3:0.#} FPS）。时长模式下帧数由帧率决定，因此这份数据覆盖了流程内的全部阶段，"
+                        "数据来自自动 Play 模式测试：先丢弃 {0} 帧启动拖动，再采 {1:0.#} 秒（面板记录 {2} 帧）。"
+                        + "时长模式下帧数由帧率决定，因此这份数据覆盖了流程内的全部阶段，"
                         + "不只是稳态 —— 看结论时请把阶段性尖峰一并纳入判断。",
-                        job.warmupFrames, job.durationSeconds, frames.Count,
-                        frames.Count / Math.Max(0.001, job.durationSeconds))
+                        job.warmupFrames, job.durationSeconds, data.frameCount)
                     : string.Format(CultureInfo.InvariantCulture,
-                        "数据来自自动 Play 模式测试：先丢弃 {0} 帧启动抖动，再连续采样 {1} 帧。"
-                        + "采样期间的平均帧耗时/GC 分配代表游戏循环稳定后的表现，不含场景加载与 JIT 的开销。",
-                        job.warmupFrames, frames.Count));
+                        "数据来自自动 Play 模式测试：先丢弃 {0} 帧启动拖动，再采 {1} 帧（面板记录）。"
+                        + "这段代表游戏循环稳定后的表现，不含场景加载与 JIT 的开销。",
+                        job.warmupFrames, data.frameCount));
 
                 PerfPipeline.RunCollectors(snap, false, null);
                 PerfPipeline.Analyze(snap);
@@ -382,9 +381,9 @@ namespace PerfAgent.Core
 
                 job.snapshotId = snap.id;
                 job.snapshotPath = path;
-                job.capturedFrames = frames.Count;
+                job.capturedFrames = data.frameCount;
                 job.phase = PlayModeTestPhase.Finalizing;
-                job.AddEvent("快照已落盘：" + snap.id + "（" + frames.Count + " 帧）");
+                job.AddEvent("快照已落盘：" + snap.id + "（面板记录 " + data.frameCount + " 帧）");
                 Save(job);
             }
             catch (Exception e)

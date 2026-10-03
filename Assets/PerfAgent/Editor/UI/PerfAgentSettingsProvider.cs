@@ -31,6 +31,7 @@ namespace PerfAgent.UI
             cfg.budget.targetFrameRate = EditorGUILayout.FloatField("目标帧率 (fps)", cfg.budget.targetFrameRate);
             cfg.budget.warnRatio = EditorGUILayout.Slider("预警比例", cfg.budget.warnRatio, 0.1f, 1f);
             cfg.budget.maxManagedAllocBytesPerFrame = EditorGUILayout.LongField("每帧托管分配上限 (B)", cfg.budget.maxManagedAllocBytesPerFrame);
+            cfg.budget.keepSnapshots = EditorGUILayout.IntField("保留快照个数（0 = 不清理）", cfg.budget.keepSnapshots);
             cfg.budget.maxDrawCalls = EditorGUILayout.IntField("Draw Call 预算", cfg.budget.maxDrawCalls);
             cfg.budget.maxSetPassCalls = EditorGUILayout.IntField("SetPass Call 预算", cfg.budget.maxSetPassCalls);
             cfg.budget.maxTriangles = EditorGUILayout.LongField("三角面预算", cfg.budget.maxTriangles);
@@ -39,7 +40,7 @@ namespace PerfAgent.UI
             cfg.budget.maxTempAllocatorMB = EditorGUILayout.LongField("TempAllocator 预算 (MB)", cfg.budget.maxTempAllocatorMB);
             cfg.budget.maxRealtimeShadowLights = EditorGUILayout.IntField("实时阴影方向光上限", cfg.budget.maxRealtimeShadowLights);
             cfg.budget.maxAudioSourceCount = EditorGUILayout.IntField("AudioSource 数量上限", cfg.budget.maxAudioSourceCount);
-            cfg.budget.captureFrames = EditorGUILayout.IntField("默认采样帧数", cfg.budget.captureFrames);
+            cfg.budget.captureFrames = EditorGUILayout.IntField("默认记录帧数", cfg.budget.captureFrames);
             EditorGUI.indentLevel--;
 
             EditorGUILayout.Space(10);

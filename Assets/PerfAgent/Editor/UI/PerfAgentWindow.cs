@@ -76,7 +76,7 @@ namespace PerfAgent.UI
             window.Show();
         }
 
-        [MenuItem(MenuRoot + "抓帧并分析", false, 101)]
+        [MenuItem(MenuRoot + "采集并分析", false, 101)]
         public static void CaptureAndAnalyze()
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
@@ -326,7 +326,7 @@ namespace PerfAgent.UI
 
                 _lastFollowFrames = frames;
                 _nextFollowPoll = nowCapturing + 0.25;
-                SetStatus("跟随采集中（你自己操作）：已记录 " + frames
+                SetStatus("跟随采集中（你自己操作）：Profiler 已记录 " + frames
                     + " 帧。结束时点「跟随采集」按钮，或直接退出 Play。");
                 return;
             }
@@ -402,7 +402,7 @@ namespace PerfAgent.UI
             });
             bar.Add(seconds);
 
-            bar.Add(ToolbarButton("抓帧并分析", delegate
+            bar.Add(ToolbarButton("采集并分析", delegate
             {
                 Capture(PerfAgentSettings.Config.budget.captureFrames,
                     PerfAgentSettings.Config.budget.captureSeconds);
@@ -733,7 +733,7 @@ namespace PerfAgent.UI
         string ScriptOnlyAnswer(string question)
         {
             var snap = PerfSession.Current;
-            if (snap == null) return "当前没有快照。请先点击「抓帧并分析」。\n";
+            if (snap == null) return "当前没有快照。请先点「采集并分析」。\n";
 
             var sb = new StringBuilder();
             sb.Append("（未配置 LLM，以下为本地规则引擎结论，未使用任何外部服务。")
@@ -839,7 +839,7 @@ namespace PerfAgent.UI
             var snap = PerfSession.Current;
             if (snap == null)
             {
-                _detailHost.Add(new Label("还没有数据。点击「抓帧并分析」开始。"));
+                _detailHost.Add(new Label("还没有数据。点「采集并分析」开始。"));
                 return;
             }
 

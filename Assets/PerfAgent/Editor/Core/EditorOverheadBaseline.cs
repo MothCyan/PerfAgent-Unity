@@ -140,7 +140,7 @@ namespace PerfAgent.Core
             bool profilerWasEnabled = ProfilerApi.Enabled;
             if (!profilerWasEnabled) ProfilerApi.Enabled = true;
 
-            var rec = StatRecorder.MakeFirstValid(ProfilerCategory.Memory, FrameCapture.GcAllocCounters);
+            var rec = StatRecorder.MakeFirstValid(ProfilerCategory.Memory, StatRecorder.GcAllocCounters);
             var samples = new double[TargetSamples];
             int n = 0;
             int warmup = WarmupTicks;
