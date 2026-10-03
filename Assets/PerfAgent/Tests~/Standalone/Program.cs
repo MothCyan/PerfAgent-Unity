@@ -55,6 +55,9 @@ namespace PerfAgent.RuleRegression
                 SceneFindingsHaveExecutableFixes,
                 DrawCallFindingOffersAtlasFix,
                 CodeFindingsExposeNoAutoFix,
+                IsolatedStallIsNotReportedAsProjectJitter,
+                RepeatedSpikesWithoutCorroborationStayUnattributed,
+                SlowFramesWithAllocationSpikeAreAttributed,
                 FrameDownsamplePreservesShapeAndBounds,
                 PlayModeTestJobProgressHandlesDurationMode,
                 ToolResultFolderFoldsWithoutBreakingPairs,
@@ -124,6 +127,84 @@ namespace PerfAgent.RuleRegression
             True(finding.title.IndexOf("项目每帧托管分配", StringComparison.Ordinal) >= 0,
                 "title must name the project-attributable number: " + finding.title);
             Evidence(finding);
+        }
+
+        /// <summary>
+        /// 空工程回归：编辑器自身的孤立停顿不能被报成项目的帧耗时抖动。
+        /// 实测数据：1650 帧里只有 19 帧超过 P95×1.5，峰值 87.84 ms 出现在「进入 Play 的第 2 帧」，
+        /// 其余尖峰帧的分配（~16.9 KB）与 Draw Call（24）跟普通帧完全一样。
+        /// </summary>
+        static void IsolatedStallIsNotReportedAsProjectJitter()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.SetMetric("帧耗时均值", "ms", 3.1, "FrameCapture/test");
+            for (int i = 0; i < 200; i++)
+            {
+                bool slow = i == 5 || i == 40 || i == 120;
+                snapshot.frames.Add(new FrameStat
+                {
+                    frame = i,
+                    deltaMs = slow ? 40.0 : 3.0,
+                    allocInFrameBytes = 16871,
+                    drawCalls = 24
+                });
+            }
+
+            True(snapshot.FrameTimeMaxMs() > snapshot.FrameTimePercentileMs(95) * 1.5,
+                "this test only proves something if a spike exists");
+            True(Findings(snapshot, "frame_time_jitter").Count == 0,
+                "an isolated editor stall must not be reported as a project jitter problem");
+            True(Findings(snapshot, "spike_attribution").Count == 0,
+                "without evidence on the game side there is nothing to attribute");
+            True(snapshot.notes.Exists(n => n.IndexOf("无法归因到项目", StringComparison.Ordinal) >= 0),
+                "the snapshot must explain why the spikes were not attributed");
+        }
+
+        /// <summary>尖峰反复出现（占比越过门槛）时仍然报抖动，但没有游戏侧佐证时不给归因。</summary>
+        static void RepeatedSpikesWithoutCorroborationStayUnattributed()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.SetMetric("帧耗时均值", "ms", 3.1, "FrameCapture/test");
+            for (int i = 0; i < 1000; i++)
+            {
+                bool slow = i >= 970;
+                snapshot.frames.Add(new FrameStat
+                {
+                    frame = i,
+                    deltaMs = slow ? 40.0 : 3.0,
+                    allocInFrameBytes = 16871,
+                    drawCalls = 24
+                });
+            }
+
+            True(Findings(snapshot, "frame_time_jitter").Count == 1,
+                "repeated spikes above the share threshold must still be reported");
+            True(Findings(snapshot, "spike_attribution").Count == 0,
+                "attribution must not be emitted when the game side shows nothing");
+        }
+
+        /// <summary>正向对照：尖峰帧带着明显更高的分配时，归因要照常给出。</summary>
+        static void SlowFramesWithAllocationSpikeAreAttributed()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.SetMetric("帧耗时均值", "ms", 3.5, "FrameCapture/test");
+            for (int i = 0; i < 1000; i++)
+            {
+                bool slow = i >= 985;
+                snapshot.frames.Add(new FrameStat
+                {
+                    frame = i,
+                    deltaMs = slow ? 40.0 : 3.0,
+                    allocInFrameBytes = slow ? 200000 : 16000,
+                    drawCalls = 24
+                });
+            }
+
+            Equal(1, Findings(snapshot, "frame_time_jitter").Count, "corroborated jitter count");
+            var attribution = Single(snapshot, f => f.id == "spike_attribution");
+            Evidence(attribution);
+            True(attribution.recommendation.IndexOf("GC", StringComparison.Ordinal) >= 0,
+                "allocation-driven spikes should be described as GC-driven: " + attribution.recommendation);
         }
 
         static void ExcessiveDrawCalls()

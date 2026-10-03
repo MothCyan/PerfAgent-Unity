@@ -154,6 +154,10 @@ namespace PerfAgent.Core
                 Complete(frames);
             }, null);
 
+            // 丢掉进入 Play 的头 1 秒：域重载 + 首次 Shader 编译 + 资源初始化都集中在那里，
+            // 实测空场景第 2 帧就有 87 ms —— 那是引擎/编辑器的启动成本，不是项目的每帧开销。
+            capture.warmupSeconds = 1.0;
+
             _capture = capture;
             PerfSession.Capturing = true;
             capture.Start();
@@ -197,6 +201,12 @@ namespace PerfAgent.Core
                 try { snap.scenePath = SceneManager.GetActiveScene().path; } catch { }
 
                 FrameCapture.Summarize(snap, frames);
+
+                if (FrameCapture.LastWarmupFramesDropped > 0)
+                    snap.AddNote("已丢弃开头 " + FrameCapture.LastWarmupFramesDropped
+                        + " 帧（进入 Play 后的前 1 秒）的启动抖动：那段含域重载、首次 Shader 编译与资源初始化，"
+                        + "不是项目的每帧开销，留在统计里会把峰值带偏。");
+
                 snap.AddNote("数据来自「跟随采集」：由你自己操作，采集从进入 Play 开始、"
                     + "到退出 Play（或手动停止）结束，没有固定时长。"
                     + "因此这份数据包含真实操作过程里的全部阶段 —— 战斗、开界面、切场景、加载 —— "
@@ -214,6 +224,12 @@ namespace PerfAgent.Core
             {
                 Debug.LogWarning("[PerfAgent] 跟随采集收尾失败: " + e.Message);
             }
+
+            // 本次没能测到基线的话，趁现在（已回到编辑模式）补测一次，下次采集就能扣掉编辑器开销。
+            double baselineValue;
+            string baselineWhy;
+            if (!EditorOverheadBaseline.TryGet(out baselineValue, out baselineWhy))
+                EditorOverheadBaseline.Measure(null);
 
             Notify();
         }

@@ -470,8 +470,13 @@ namespace PerfAgent.Analysis
                 case "frame_time_near_budget":
                 case "frame_time_jitter":
                 case "spike_attribution":
-                    AddManual(plan, "先定位耗时集中的模块", "看「Marker」标签的自身耗时排行，优先处理占比最高的那个。");
-                    AddManual(plan, "再区分稳态慢还是尖峰卡", "稳态慢看渲染统计（Draw Call / SetPass）；尖峰卡看帧标签里的分配与 GC。");
+                    if (snapshot.markers != null && snapshot.markers.Count > 0)
+                        AddManual(plan, "先定位耗时集中的模块", "看「Marker」标签的自身耗时排行，优先处理占比最高的那个。");
+                    else
+                        AddManual(plan, "先定位耗时集中的模块", "本机 Marker 排行不可用（该 Unity 版本的 HierarchyFrameDataView 列语义对不上），"
+                            + "请直接在 Profiler 窗口的 Hierarchy 视图里按 Total/Self 排序定位热点。");
+                    AddManual(plan, "再区分稳态慢还是尖峰卡", "稳态慢看渲染统计（Draw Call / SetPass）；尖峰卡看帧标签里的分配与 GC。"
+                        + "注意：编辑器内测得的帧耗时包含编辑器自身的停顿，尖峰要在 Dev Build 上复测确认。");
                     break;
 
                 case "marker_hotspot":

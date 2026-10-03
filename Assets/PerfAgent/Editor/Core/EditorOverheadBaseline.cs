@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
@@ -34,11 +35,14 @@ namespace PerfAgent.Core
         const string ValueKey = "PerfAgent.Baseline.GcAllocPerFrame";
         const string ValidKey = "PerfAgent.Baseline.GcAllocPerFrame.Valid";
         const string SamplesKey = "PerfAgent.Baseline.GcAllocPerFrame.Samples";
+        const string ReasonKey = "PerfAgent.Baseline.GcAllocPerFrame.Reason";
 
-        const int TargetSamples = 40;
-        const int MinSamples = 8;
-        const int WarmupTicks = 5;
-        const double MaxSeconds = 0.6;
+        // 窗口宽一点：编辑模式下 EditorApplication.update 会被降频，
+        // 窗口太短会「样本不足」而直接丢掉基线（实测就是这么丢的）。
+        const int TargetSamples = 20;
+        const int MinSamples = 5;
+        const int WarmupTicks = 3;
+        const double MaxSeconds = 1.5;
 
         /// <summary>基线值（B/帧）。NaN = 不可用。</summary>
         public static double BytesPerFrame = double.NaN;
@@ -56,11 +60,13 @@ namespace PerfAgent.Core
         {
             BytesPerFrame = double.NaN;
             Samples = 0;
+            Reason = "";
             try
             {
                 SessionState.EraseBool(ValidKey);
                 SessionState.EraseFloat(ValueKey);
                 SessionState.EraseInt(SamplesKey);
+                SessionState.EraseString(ReasonKey);
             }
             catch { }
         }
@@ -80,6 +86,9 @@ namespace PerfAgent.Core
                         double v = SessionState.GetFloat(ValueKey, 0f);
                         if (v > 0) { BytesPerFrame = v; Samples = SessionState.GetInt(SamplesKey, 0); }
                     }
+                    // 失败原因也要持久化：它是静态字段，进 Play 时的域重载会把它清掉，
+                    // 只剩一句「没测过基线」，看不出到底为什么没测到。
+                    if (string.IsNullOrEmpty(Reason)) Reason = SessionState.GetString(ReasonKey, "");
                 }
                 catch { }
             }
@@ -180,6 +189,7 @@ namespace PerfAgent.Core
                             SessionState.SetFloat(ValueKey, (float)median);
                             SessionState.SetBool(ValidKey, true);
                             SessionState.SetInt(SamplesKey, n);
+                            SessionState.SetString(ReasonKey, "");
                         }
                         catch { }
                     }
@@ -187,6 +197,17 @@ namespace PerfAgent.Core
                     {
                         Reason = "编辑器空转期间的分配样本全为 0，基线不可用";
                     }
+                }
+
+                if (!string.IsNullOrEmpty(Reason))
+                {
+                    try { SessionState.SetString(ReasonKey, Reason); } catch { }
+                    Debug.LogWarning("[PerfAgent] 编辑器开销基线测量失败：" + Reason);
+                }
+                else
+                {
+                    Debug.Log("[PerfAgent] 编辑器开销基线 = " + ((long)BytesPerFrame).ToString(CultureInfo.InvariantCulture)
+                              + " B/帧（" + Samples + " 个样本）。采集时会从「每帧托管分配」里扣掉它。");
                 }
 
                 Measuring = false;

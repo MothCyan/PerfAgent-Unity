@@ -36,12 +36,25 @@ namespace PerfAgent.Collectors
         public double durationSeconds;
 
         /// <summary>
+        /// >0 表示丢弃开头这么多秒的「启动抖动」。
+        ///
+        /// 进入 Play 的头几帧里包含域重载、首次 Shader 编译、资源初始化 —— 实测一个空场景的
+        /// 第 2 帧就有 87 ms（当帧分配 2.1 MB），第 1 帧 70 ms。那不是项目的问题，
+        /// 留在统计里会把峰值与 P95 一起带偏（自动 Play 测试本来就有丢弃阶段，这里补齐跟随采集）。
+        /// 默认 0 = 不丢，由调用方按需开启。
+        /// </summary>
+        public double warmupSeconds;
+
+        /// <summary>
         /// 落盘时最多保留多少帧。原始帧仍**全部**参与统计，这里只影响快照文件的体积。
         /// 3000 帧在帧耗时曲线上已经足够看出形态，再多人眼也分辨不出来。
         /// </summary>
         public const int MaxStoredFrames = 3000;
 
         public bool running { get; private set; }
+
+        /// <summary>最近一次收尾时丢弃的启动抖动帧数（0 = 没丢）。</summary>
+        public static int LastWarmupFramesDropped;
 
         /// <summary>已采到的帧数。外部（如自动 Play 模式测试的状态机）用它汇报进度。</summary>
         public int CapturedCount { get { return _frames.Count; } }
@@ -138,6 +151,8 @@ namespace PerfAgent.Collectors
                 _restoreProfilerState = false;
             }
 
+            DropWarmupFrames();
+
             if (invokeCallback && _onDone != null) _onDone(_frames);
 
             // 长采集时这个列表可能有几万条（几十 MB），回调已经用完了，立即释放。
@@ -148,6 +163,32 @@ namespace PerfAgent.Collectors
         static void DisposeRecorder(ref ProfilerRecorder r)
         {
             if (r.Valid) { try { r.Dispose(); } catch { } }
+        }
+
+        /// <summary>
+        /// 丢弃开头的启动抖动帧（见 warmupSeconds）。
+        /// 至少保留 10 帧，否则采集很短时会把数据全丢光。
+        /// </summary>
+        void DropWarmupFrames()
+        {
+            LastWarmupFramesDropped = 0;
+            if (warmupSeconds <= 0 || _frames.Count == 0) return;
+
+            double limit = warmupSeconds * 1000.0;
+            double acc = 0;
+            int drop = 0;
+            while (drop < _frames.Count)
+            {
+                acc += _frames[drop].deltaMs;
+                if (acc >= limit) break;
+                drop++;
+            }
+
+            if (drop > 0 && _frames.Count - drop >= 10)
+            {
+                _frames.RemoveRange(0, drop);
+                LastWarmupFramesDropped = drop;
+            }
         }
 
         void Tick()

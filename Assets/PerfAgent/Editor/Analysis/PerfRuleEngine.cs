@@ -77,69 +77,134 @@ namespace PerfAgent.Analysis
                 outList.Add(f);
             }
 
-            // 抖动
+            // 抖动：必须有「游戏侧」的佐证才归因到项目。
+            //
+            // 编辑器里量到的帧耗时是编辑器 update 的墙钟间隔，包含编辑器自身的停顿
+            //（资源刷新、窗口重绘、编辑器 GC）。实测：一个「空场景 + 无脚本 + 24 个 Draw Call」
+            // 的工程照样能出现 87 ms 的孤立尖峰，且尖峰帧的分配/Draw Call 与普通帧完全一样 ——
+            // 那是编辑器的停顿，不是项目的问题。没有佐证就只写一句提示，不报结论。
             if (s.frames.Count >= 30)
             {
                 var spikes = s.SpikeFrames(20);
-                if (spikes.Count >= 3 && p95 > 0 && max > p95 * 1.5)
-                {
-                    var f = New("frame_time_jitter", "帧率", Severity.Warn,
-                        string.Format(CultureInfo.InvariantCulture, "帧耗时抖动明显：峰值 {0:0.##} ms 是 P95（{1:0.##} ms）的 {2:0.#} 倍", max, p95, max / p95),
-                        "稳态帧率尚可但存在周期性卡顿尖峰，通常是 GC、资源加载或物理集中计算造成。",
-                        "对比尖峰帧与平均帧的指标差异（get_frames 工具），定位尖峰来源。", 0.75f);
-                    Ev(f, "frame_capture", "帧耗时峰值", Fmt(max), "ms", "P95×1.5 = " + Fmt(p95 * 1.5), src);
-                    Ev(f, "frame_capture", "帧耗时 P95", Fmt(p95), "ms", "", src);
-                    outList.Add(f);
+                int slowCount = CountFramesAbove(s, p95 * 1.5);
+                int needCount = Math.Max(10, (int)(s.frames.Count * 0.02));
 
-                    // 尖峰归因
-                    var attribution = AttributeSpikes(s, spikes);
-                    if (attribution != null) outList.Add(attribution);
+                if (spikes.Count >= 3 && p95 > 0 && max > p95 * 1.5 && max >= JitterFloorMs)
+                {
+                    double spikeAlloc, baseAlloc, spikeDc, baseDc;
+                    bool recorderAlloc;
+                    bool corroborated = CorrelateSpikes(s, spikes, out spikeAlloc, out baseAlloc,
+                                                        out spikeDc, out baseDc, out recorderAlloc);
+
+                    if (corroborated || slowCount >= needCount)
+                    {
+                        var f = New("frame_time_jitter", "帧率", Severity.Warn,
+                            string.Format(CultureInfo.InvariantCulture, "帧耗时抖动明显：峰值 {0:0.##} ms 是 P95（{1:0.##} ms）的 {2:0.#} 倍", max, p95, max / p95),
+                            string.Format(CultureInfo.InvariantCulture,
+                                "共 {0} 帧（{1:0.#}%）明显超过 P95×1.5；{2}稳态帧率尚可但存在卡顿尖峰。",
+                                slowCount, 100.0 * slowCount / s.frames.Count,
+                                corroborated ? "尖峰帧的分配/Draw Call 与普通帧有差异，" : "尖峰反复出现，"),
+                            "对比尖峰帧与平均帧的指标差异（get_frames 工具），定位尖峰来源。", 0.75f);
+                        Ev(f, "frame_capture", "帧耗时峰值", Fmt(max), "ms", "P95×1.5 = " + Fmt(p95 * 1.5), src);
+                        Ev(f, "frame_capture", "帧耗时 P95", Fmt(p95), "ms", "", src);
+                        Ev(f, "frame_capture", "超过 P95×1.5 的帧数", slowCount.ToString(CultureInfo.InvariantCulture),
+                            "帧", "门槛 " + needCount.ToString(CultureInfo.InvariantCulture) + " 帧", src);
+                        outList.Add(f);
+
+                        if (corroborated)
+                        {
+                            var attribution = AttributeSpikes(s, spikes, spikeAlloc, baseAlloc, spikeDc, baseDc, recorderAlloc);
+                            if (attribution != null) outList.Add(attribution);
+                        }
+                        else
+                        {
+                            s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                                "尖峰反复出现（{0} 帧，峰值 {1:0.##} ms），但尖峰帧的分配与 Draw Call 与普通帧相当，"
+                                + "游戏侧看不到成因，未归因到项目。",
+                                slowCount, max));
+                        }
+                    }
+                    else
+                    {
+                        s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                            "检测到 {0} 帧明显偏慢（峰值 {1:0.##} ms vs P95 {2:0.##} ms），但尖峰帧的分配与 Draw Call 与普通帧相当，"
+                            + "在编辑器内无法归因到项目：编辑器自身的停顿（资源刷新、窗口重绘、编辑器 GC、首次 Shader 编译）"
+                            + "也会产生这种孤立尖峰，本工具不把这种尖峰算成项目问题。要确认请在 Development Build 或真机上复测。",
+                            slowCount, max, p95));
+                    }
                 }
             }
         }
 
-        /// <summary>尖峰归因：把尖峰帧的渲染/内存/分配指标与平均帧对比。</summary>
-        static PerfFinding AttributeSpikes(PerfSnapshot s, List<int> spikeFrames)
+        /// <summary>低于 30 FPS 的帧才叫「卡顿尖峰」；比这更快的帧不构成需要报警的抖动。</summary>
+        const double JitterFloorMs = 33.0;
+
+        static int CountFramesAbove(PerfSnapshot s, double thresholdMs)
+        {
+            int n = 0;
+            for (int i = 0; i < s.frames.Count; i++)
+                if (s.frames[i].deltaMs > thresholdMs) n++;
+            return n;
+        }
+
+        /// <summary>
+        /// 把尖峰帧的分配与 Draw Call 跟其余帧对比，作为「尖峰是否属于项目」的佐证。
+        ///
+        /// 分配优先用 ProfilerRecorder「GC Allocated In Frame」（与主指标同源），
+        /// 没有时退回 GC.GetTotalMemory 差值（弱口径，会在证据里写明）。
+        /// 差异要越过噪声带才算数：编辑器每帧本来就有一两千字节级的波动。
+        /// </summary>
+        static bool CorrelateSpikes(PerfSnapshot s, List<int> spikeFrames,
+            out double spikeAlloc, out double baseAlloc,
+            out double spikeDc, out double baseDc, out bool recorderAlloc)
+        {
+            recorderAlloc = s.HasRecorderGcAlloc();
+            spikeAlloc = baseAlloc = spikeDc = baseDc = 0;
+            int ns = 0, nb = 0;
+
+            for (int i = 0; i < s.frames.Count; i++)
+            {
+                var fr = s.frames[i];
+                double alloc = recorderAlloc ? Math.Max(0, (double)fr.allocInFrameBytes) : Math.Max(0, fr.managedAllocBytes);
+                if (spikeFrames.Contains(fr.frame)) { spikeAlloc += alloc; spikeDc += fr.drawCalls; ns++; }
+                else { baseAlloc += alloc; baseDc += fr.drawCalls; nb++; }
+            }
+            if (ns == 0 || nb == 0) return false;
+
+            spikeAlloc /= ns; baseAlloc /= nb;
+            spikeDc /= ns; baseDc /= nb;
+
+            bool allocSignal = spikeAlloc - baseAlloc > Math.Max(4096.0, baseAlloc * 0.25);
+            bool dcSignal = spikeDc - baseDc >= 1 && spikeDc > baseDc * 1.25;
+            return allocSignal || dcSignal;
+        }
+
+        /// <summary>尖峰归因：把尖峰帧的渲染/分配指标与普通帧对比。
+        /// 数字由 CorrelateSpikes 算好传入 —— 它同时决定了这次归因能不能取证。</summary>
+        static PerfFinding AttributeSpikes(PerfSnapshot s, List<int> spikeFrames,
+            double spikeAlloc, double baseAlloc, double spikeDcAvg, double baseDcAvg, bool recorderAlloc)
         {
             if (spikeFrames.Count == 0) return null;
             string frameList = string.Join(",", spikeFrames.ConvertAll(x => x.ToString(CultureInfo.InvariantCulture)).ToArray());
 
-            double spikeAlloc = 0, baseAlloc = 0;
-            int spikeDc = 0, baseDc = 0;
-            int ns = 0, nb = 0;
-            for (int i = 0; i < s.frames.Count; i++)
-            {
-                var fr = s.frames[i];
-                bool isSpike = spikeFrames.Contains(fr.frame);
-                if (isSpike)
-                {
-                    spikeAlloc += Math.Max(0, fr.managedAllocBytes);
-                    spikeDc += fr.drawCalls;
-                    ns++;
-                }
-                else
-                {
-                    baseAlloc += Math.Max(0, fr.managedAllocBytes);
-                    baseDc += fr.drawCalls;
-                    nb++;
-                }
-            }
-            if (ns == 0 || nb == 0) return null;
-
-            spikeAlloc /= ns; baseAlloc /= nb;
-            double spikeDcAvg = spikeDc / (double)ns, baseDcAvg = baseDc / (double)nb;
+            bool allocSignal = spikeAlloc - baseAlloc > Math.Max(4096.0, baseAlloc * 0.25);
+            string allocSource = recorderAlloc
+                ? "ProfilerRecorder「GC Allocated In Frame」（含编辑器开销）"
+                : "GC.GetTotalMemory 差值（弱口径，看不见当帧分配后即回收的部分）";
 
             var f = New("spike_attribution", "帧率", Severity.Info,
                 "尖峰帧归因",
                 string.Format(CultureInfo.InvariantCulture,
                     "尖峰帧（{0}）相对普通帧：每帧分配 {1:0} B vs {2:0} B，Draw Call {3:0.#} vs {4:0.#}。",
                     frameList, spikeAlloc, baseAlloc, spikeDcAvg, baseDcAvg),
-                spikeAlloc > baseAlloc * 2 && spikeAlloc > 1024
+                allocSignal
                     ? "分配量差异显著，尖峰很可能由 GC / 临时分配引起，优先排查尖峰帧上的字符串、容器与协程分配。"
                     : "分配量差异不明显，更可能是同步加载、物理集中计算或 Shader 变体首次编译造成。",
-                0.6f);
-            Ev(f, "frame_capture", "尖峰帧平均分配", Fmt(spikeAlloc), "B", "普通帧 " + Fmt(baseAlloc) + " B", "帧 " + frameList);
-            Ev(f, "frame_capture", "尖峰帧平均 Draw Call", Fmt(spikeDcAvg), "次", "普通帧 " + Fmt(baseDcAvg) + " 次", "帧 " + frameList);
+                allocSignal ? 0.6f : 0.5f);
+            Ev(f, "frame_capture", "尖峰帧平均分配", Fmt(spikeAlloc), "B", "普通帧 " + Fmt(baseAlloc) + " B",
+                allocSource + "；帧 " + frameList);
+            Ev(f, "frame_capture", "尖峰帧平均 Draw Call", Fmt(spikeDcAvg), "次", "普通帧 " + Fmt(baseDcAvg) + " 次",
+                "帧 " + frameList);
             return f;
         }
 
