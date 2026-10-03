@@ -52,6 +52,23 @@ namespace PerfAgent.Collectors
         }
 
         public static bool Has(ProfilerRecorder r) { return r.Valid; }
+
+        public static void Dispose(ref ProfilerRecorder r)
+        {
+            try { if (r.Valid) r.Dispose(); } catch { }
+            r = default(ProfilerRecorder);
+        }
+
+        /// <summary>
+        /// 「点亮」一个计数器：有些计数器（典型是 Memory/GC Allocated In Frame）只在有人订阅时才逐帧记录，
+        /// 没有订阅者时面板的序列根本是空的（实测 300 帧里只有 1 帧有值）。
+        /// 所以读面板序列前要先建一个 recorder 挂着，读完再 <see cref="Dispose"/>。
+        /// 注意：只是挂着订阅，不读它的值 —— 不构成逐帧采样。
+        /// </summary>
+        public static ProfilerRecorder Register(ProfilerCategory category, string[] candidates)
+        {
+            return MakeFirstValid(category, candidates);
+        }
     }
 
     // =========================================================================

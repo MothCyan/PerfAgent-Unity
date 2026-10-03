@@ -65,6 +65,7 @@ namespace PerfAgent.RuleRegression
                 ToolResultFolderFoldsWithoutBreakingPairs,
                 CodePatternIsParsedBeforeMatching,
                 ColumnLayoutDetectsUnity2022HierarchyColumns,
+                ColumnLayoutExcludesTimestampColumns,
                 ColumnLayoutParsesBareDecimalsAsTime,
                 ColumnLayoutParsesByteUnits
             };
@@ -243,6 +244,33 @@ namespace PerfAgent.RuleRegression
             // 名称列（[0]）不能被认成任何数值列
             True(!layout.msColumns.Contains(0) && layout.callsColumn != 0 && layout.gcAllocColumn != 0,
                 "the name column must not be classified as numeric");
+        }
+
+        /// <summary>
+        /// 实测的 15 列布局（Unity 2022.3，Play 模式，探针输出）：
+        ///   [0]名称 [1][2]百分比 [3]调用次数 [4]GC Alloc [5][6]耗时 [7..13]N/A 或空 [14]帧起始时间戳
+        /// [14] 是裸小数（3627373363.20），只靠「裸小数 = 耗时」会把它也当成耗时列，
+        /// 再用「耗时列取最大值当总耗时」就得到 36 亿 ms/帧 —— 这条用例钉死「大数一律排除」。
+        /// </summary>
+        static void ColumnLayoutExcludesTimestampColumns()
+        {
+            var rows = new List<string[]>
+            {
+                new[] { "EditorLoop", "0.0%", "0.0%", "1", "0 B", "0.06", "0.06", "N/A", "N/A", "N/A", "N/A", "N/A", "", "N/A", "3627373363.20" },
+                new[] { "Camera.Render", "65.3%", "12.4%", "1", "1.2 KB", "3.42", "0.65", "N/A", "N/A", "N/A", "N/A", "N/A", "", "N/A", "3627373371.55" },
+                new[] { "PlayerLoop", "70.1%", "0.2%", "1", "0 B", "3.67", "0.01", "N/A", "N/A", "N/A", "N/A", "N/A", "", "N/A", "3627373375.12" }
+            };
+
+            var layout = ProfilerColumnLayout.Detect(rows);
+            Equal(15, layout.columnCount, "column count");
+            Equal(2, layout.msColumns.Count, "time column count");
+            Equal(5, layout.msColumns[0], "first time column");
+            Equal(6, layout.msColumns[1], "second time column");
+            Equal(1, layout.timestampColumns.Count, "timestamp column count");
+            Equal(14, layout.timestampColumns[0], "timestamp column index");
+            True(!layout.msColumns.Contains(14), "the timestamp column must not be treated as a duration");
+            Equal(4, layout.gcAllocColumn, "gc alloc column");
+            Equal(3, layout.callsColumn, "calls column");
         }
 
         /// <summary>裸小数（无单位）必须被当成耗时 —— 这正是旧实现漏掉的情况。</summary>

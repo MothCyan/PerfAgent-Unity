@@ -125,6 +125,16 @@ namespace PerfAgent.Core
             return false;
         }
 
+        /// <summary>删除全部快照，返回实际删掉的个数。</summary>
+        public static int DeleteAll()
+        {
+            int deleted = 0;
+            var all = List();
+            for (int i = 0; i < all.Count; i++)
+                if (Delete(all[i])) deleted++;
+            return deleted;
+        }
+
         /// <summary>把 baseline 的指标填进 current.previous / delta，并返回回归项名称列表。</summary>
         public static List<string> Diff(PerfSnapshot baseline, PerfSnapshot current)
         {

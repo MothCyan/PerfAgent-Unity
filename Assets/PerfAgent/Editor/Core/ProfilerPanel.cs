@@ -154,13 +154,13 @@ namespace PerfAgent.Core
         public const int SampleTimeBudgetMs = 1500;
 
         /// <summary>
-        /// 单帧耗时的合理上限（毫秒）。
+        /// 单帧耗时的合理上限（毫秒）——直接复用列语义层的常量，保证两边一致。
         ///
-        /// 这个闸门是必需的：面板的列语义只能从内容反推，一旦把别的列（比如某列字节数 /
-        /// 累计值）当成耗时列，会算出几十亿 ms 这种荒谬值，然后一路变成「严重：帧耗时超出预算」。
-        /// 实测踩过这个坑（36 亿 ms/帧）。超出上限就当读不到，不参与统计。
+        /// 这个闸门是必需的：面板的列语义只能从内容反推，一旦把别的列（比如帧起始时间戳、
+        /// 某列字节数）当成耗时列，会算出几十亿 ms 这种荒谬值，然后一路变成「严重：帧耗时超出预算」。
+        /// 实测踩过这个坑（36 亿 ms/帧）。
         /// </summary>
-        public const double MaxPlausibleFrameMs = 2000.0;
+        public const double MaxPlausibleFrameMs = ProfilerColumnLayout.MaxPlausibleTimeMs;
 
         /// <summary>帧耗时读数是否合理（0 &lt; ms ≤ 2000）。</summary>
         public static bool IsPlausibleFrameMs(double ms)

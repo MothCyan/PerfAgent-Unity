@@ -39,8 +39,22 @@ namespace PerfAgent.Collectors
         /// <summary>耗时列（裸小数，或带 ms 后缀）。顺序按列号升序。</summary>
         public readonly List<int> msColumns = new List<int>();
 
-        /// <summary>百分比列（Total% / Self%）。顺序按列号升序。</summary>
+        /// <summary>
+        /// 百分比列（Total% / Self%）。顺序按列号升序。
+        /// </summary>
         public readonly List<int> percentColumns = new List<int>();
+
+        /// <summary>
+        /// 时间戳列（裸大数，比如 frameStartTimeMs）。
+        ///
+        /// 识别它是必需的：实测踩过 —— 面板有一列是「帧起始时间戳」（与帧号递增、量级 3.6e9），
+        /// 长得和耗时列一样（裸小数、无单位），被当成耗时列后「取最大值当总耗时」
+        /// 就得到了 36 亿 ms/帧，最后变成一条严重结论。
+        /// </summary>
+        public readonly List<int> timestampColumns = new List<int>();
+
+        /// <summary>耗时读数的合理上限（毫秒）：超过它就不可能是单帧耗时。</summary>
+        public const double MaxPlausibleTimeMs = 2000.0;
 
         /// <summary>识别到的列数。</summary>
         public int columnCount;
@@ -60,6 +74,8 @@ namespace PerfAgent.Collectors
             sb.Append("，GC 分配列 ").Append(gcAllocColumn < 0 ? "未识别" : gcAllocColumn.ToString(CultureInfo.InvariantCulture));
             sb.Append("，调用次数列 ").Append(callsColumn < 0 ? "未识别" : callsColumn.ToString(CultureInfo.InvariantCulture));
             sb.Append("，百分比列 [").Append(Join(percentColumns)).Append(']');
+            if (timestampColumns.Count > 0)
+                sb.Append("，时间戳列 [").Append(Join(timestampColumns)).Append("]（已排除，不计入耗时）");
             return sb.ToString();
         }
 
@@ -96,6 +112,7 @@ namespace PerfAgent.Collectors
             var bytes = new int[cols];
             var integer = new int[cols];
             var decimalOnly = new int[cols];
+            var hugeDecimal = new int[cols];
 
             int limit = Math.Min(rows.Count, 40);
             for (int r = 0; r < limit; r++)
@@ -111,7 +128,12 @@ namespace PerfAgent.Collectors
                     else if (HasMsUnit(cell)) msWithUnit[c]++;
                     else if (HasByteUnit(cell)) bytes[c]++;
                     else if (IsBareInteger(cell)) integer[c]++;
-                    else if (IsBareDecimal(cell)) decimalOnly[c]++;
+                    else if (IsBareDecimal(cell))
+                    {
+                        decimalOnly[c]++;
+                        double v = ParseNumber(cell);
+                        if (!double.IsNaN(v) && v > MaxPlausibleTimeMs) hugeDecimal[c]++;
+                    }
                 }
             }
 
@@ -131,7 +153,13 @@ namespace PerfAgent.Collectors
                     if (layout.callsColumn < 0) layout.callsColumn = c;
                     continue;
                 }
-                if (decimalOnly[c] > 0) layout.msColumns.Add(c);             // 裸小数：耗时（2022 的 [5][6]）
+                if (decimalOnly[c] > 0)
+                {
+                    // 裸小数有两种：耗时（小）与时间戳 / 大计数器（大）。
+                    // 超过 MaxPlausibleTimeMs 一律当时间戳，不参与耗时统计。
+                    if (hugeDecimal[c] == 0) layout.msColumns.Add(c);
+                    else layout.timestampColumns.Add(c);
+                }
             }
 
             return layout;

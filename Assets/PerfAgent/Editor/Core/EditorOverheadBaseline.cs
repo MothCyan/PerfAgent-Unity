@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using PerfAgent.Collectors;
@@ -149,6 +150,9 @@ namespace PerfAgent.Core
             int startFrame = ProfilerApi.LastFrameIndex;
             var clock = Stopwatch.StartNew();
 
+            // 点亮 GC 分配计数器：不订阅它就不会逐帧记录，序列读出来是空的
+            var registration = StatRecorder.Register(ProfilerCategory.Memory, StatRecorder.GcAllocCounters);
+
             EditorApplication.CallbackFunction tick = null;
             tick = delegate
             {
@@ -161,6 +165,7 @@ namespace PerfAgent.Core
 
                 EditorApplication.update -= tick;
                 if (!profilerWasEnabled) ProfilerApi.Enabled = false;
+                StatRecorder.Dispose(ref registration);
 
                 double median = 0;
                 int valid = 0;

@@ -803,6 +803,35 @@ namespace PerfAgent.UI
             _snapshotHost.Clear();
 
             var paths = PerfSnapshotStore.List();
+
+            // 头部：数量 + 一键清空。
+            // 快照会一直堆在 ProjectSettings/PerfAgent/Snapshots 下（虽然已按保留个数自动清，
+            // 但用户想要「现在就把它们全删掉」时得有个手动的口子）。
+            var head = new VisualElement();
+            head.style.flexDirection = FlexDirection.Row;
+            head.style.alignItems = Align.Center;
+
+            var count = new Label("快照 " + paths.Count + " 个");
+            count.style.flexGrow = 1;
+            head.Add(count);
+
+            var clear = new Button(delegate
+            {
+                if (paths.Count == 0) { SetStatus("没有可删除的快照。"); return; }
+                if (!EditorUtility.DisplayDialog("PerfAgent",
+                        "删除全部 " + paths.Count + " 个快照？此操作不可撤销。", "删除", "取消")) return;
+
+                int n = PerfSnapshotStore.DeleteAll();
+                PerfSession.SetCurrent(null, "");
+                RefreshSnapshots();
+                RefreshDetails();
+                SetStatus("已删除 " + n + " 个快照。");
+            });
+            clear.text = "清空全部";
+            clear.style.width = 70;
+            head.Add(clear);
+            _snapshotHost.Add(head);
+
             if (paths.Count == 0)
             {
                 _snapshotHost.Add(new Label("（暂无快照）"));
@@ -815,6 +844,10 @@ namespace PerfAgent.UI
                 string id = System.IO.Path.GetFileNameWithoutExtension(path);
                 bool isCurrent = PerfSession.CurrentPath == path;
 
+                var row = new VisualElement();
+                row.style.flexDirection = FlexDirection.Row;
+                row.style.alignItems = Align.Center;
+
                 var button = new Button(delegate
                 {
                     var snap = PerfSnapshotStore.Load(path);
@@ -824,9 +857,27 @@ namespace PerfAgent.UI
                     SetStatus("已加载 " + id);
                 });
                 button.text = (isCurrent ? "▶ " : "   ") + id;
+                button.style.flexGrow = 1;
                 button.style.unityTextAlign = TextAnchor.MiddleLeft;
                 if (isCurrent) button.style.color = new Color(0.6f, 0.85f, 1f);
-                _snapshotHost.Add(button);
+                row.Add(button);
+
+                var del = new Button(delegate
+                {
+                    if (!EditorUtility.DisplayDialog("PerfAgent", "删除快照 " + id + "？", "删除", "取消")) return;
+                    if (!PerfSnapshotStore.Delete(path)) { SetStatus("删除失败（文件可能被占用）：" + id); return; }
+
+                    bool wasCurrent = PerfSession.CurrentPath == path;
+                    if (wasCurrent) PerfSession.SetCurrent(null, "");
+                    RefreshSnapshots();
+                    if (wasCurrent) RefreshDetails();
+                    SetStatus("已删除 " + id);
+                });
+                del.text = "✕";
+                del.style.width = 24;
+                row.Add(del);
+
+                _snapshotHost.Add(row);
             }
         }
 

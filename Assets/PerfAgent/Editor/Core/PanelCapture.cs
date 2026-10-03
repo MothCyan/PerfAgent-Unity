@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
+using PerfAgent.Collectors;
 
 namespace PerfAgent.Core
 {
@@ -50,6 +52,12 @@ namespace PerfAgent.Core
         double _nextPoll;
         int _pollIntervalMs = 250;
 
+        /// <summary>
+        /// 只用来「点亮」GC 分配计数器的订阅（不读它的值）。
+        /// 这个计数器只在有人订阅时才会逐帧记录，否则面板序列是空的。
+        /// </summary>
+        ProfilerRecorder _gcAllocRegistration;
+
         public PanelCapture(int frames, Action<PanelCaptureData> onDone, Action<float> onProgress = null)
         {
             targetFrames = Mathf.Max(0, frames);
@@ -85,6 +93,10 @@ namespace PerfAgent.Core
             // 窗口从「现在之后的第一帧」开始（这里之后录进来的都是被测期间）
             startFrame = ProfilerApi.LastFrameIndex;
 
+            // 点亮 GC 分配计数器：不订阅的话它不会逐帧记录，面板序列读出来是空的
+            // （实测 300 帧里只有 1 帧有值）。只挂订阅，不读值 —— 不是逐帧采样。
+            _gcAllocRegistration = StatRecorder.Register(ProfilerCategory.Memory, StatRecorder.GcAllocCounters);
+
             _clock.Restart();
             _nextPoll = 0;
             EditorApplication.update += Poll;
@@ -118,13 +130,18 @@ namespace PerfAgent.Core
                 _restoreProfilerState = false;
             }
 
-            if (!invokeCallback || _onDone == null) return;
+            if (!invokeCallback || _onDone == null)
+            {
+                StatRecorder.Dispose(ref _gcAllocRegistration);
+                return;
+            }
 
             int last = ProfilerApi.LastFrameIndex;
             PanelCaptureData data = startFrame < 0
                 ? new PanelCaptureData { unavailableReason = "采集还没开始就结束了" }
                 : ProfilerPanel.Read(startFrame + 1, last, ProfilerPanel.MaxSamples, warmupSeconds);
 
+            StatRecorder.Dispose(ref _gcAllocRegistration);
             _onDone(data);
         }
 
