@@ -41,6 +41,13 @@ namespace PerfAgent.Core
 
             string path = Path.Combine(RootDir, snapshot.id + ".json");
             File.WriteAllText(path, JsonUtility.ToJson(snapshot, true));
+
+            // 分析目录（index.jsonl）：这是「流程追溯」的入口 ——
+            // 后续不管是人还是 AI，都能从这份目录知道「做过几次分析、什么场景、多少结论」。
+            PerfHistory.RecordAnalysis(snapshot.id, snapshot.Label(), snapshot.scenePath, snapshot.label,
+                snapshot.capturedFrameCount > 0 ? snapshot.capturedFrameCount : snapshot.frames.Count,
+                snapshot.metrics.Count, snapshot.findings.Count);
+
             Prune();
             return path;
         }

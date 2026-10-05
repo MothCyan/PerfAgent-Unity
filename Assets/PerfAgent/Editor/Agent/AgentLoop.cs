@@ -352,6 +352,19 @@ namespace PerfAgent.Agent
             if (!cfg.allowSourceCodeUpload)
                 sb.Append("注意：用户已关闭源码上传。代码工具返回的代码片段会被隐藏，你无法看到源码内容，请基于模式名与位置给建议。\n");
 
+            // SOP（标准操作流程）：阶段划分 + 每阶段允许的工具 + 硬规则。
+            // 写成代码而不是提示词里的散文，是为了让「越界调用」有唯一的事实来源（见 SopDefinition）。
+            sb.Append('\n').Append(PerfAgent.Agent.SopDefinition.PromptSection());
+
+            // 历史上下文：最近的分析目录与操作日志（含是否同意），让模型知道「已经做过什么」。
+            string digest = PerfHistory.Digest();
+            if (!string.IsNullOrEmpty(digest))
+            {
+                sb.Append("\n## 历史上下文（来自本地日志，可直接引用）\n");
+                sb.Append(digest);
+                sb.Append('\n');
+            }
+
             var m = new Dictionary<string, object>();
             m["role"] = "system";
             m["content"] = sb.ToString();

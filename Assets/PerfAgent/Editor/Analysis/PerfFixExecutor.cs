@@ -79,7 +79,15 @@ namespace PerfAgent.Analysis
         // 执行
         // =====================================================================
 
-        public static PerfFixOutcome Execute(PerfFixStep step, string findingId)
+        /// <summary>
+        /// 执行一个修复步骤。
+        ///
+        /// <paramref name="consent"/> 是**同意凭据**：
+        ///   · 空 / null —— 人自己在面板里确认的（默认）；
+        ///   · "mcp:&lt;client&gt;" —— 外部客户端经同意门批准后通过 MCP 触发（后期接入）。
+        /// 它会被原样写进操作日志，事后能回答「这条改动是谁授意的」。
+        /// </summary>
+        public static PerfFixOutcome Execute(PerfFixStep step, string findingId, string consent = null)
         {
             var outcome = new PerfFixOutcome();
             if (step == null || !step.CanExecute)
@@ -178,6 +186,11 @@ namespace PerfAgent.Analysis
             PerfChangeLog.Append(record);
             outcome.record = record;
 
+            // 操作日志：谁发起、谁同意、改了几项、能不能撤销
+            PerfHistory.RecordOperation(ActorOf(consent), "fix", record.actionId, record.title,
+                record.findingId, consent, record.success, record.changedCount, record.message,
+                CanUndo(record));
+
             return outcome;
         }
 
@@ -186,7 +199,7 @@ namespace PerfAgent.Analysis
         // =====================================================================
 
         /// <summary>撤销一次已记录的批量修改。仅对记录里带了还原信息的动作有效。</summary>
-        public static PerfFixOutcome Revert(PerfFixRecord record)
+        public static PerfFixOutcome Revert(PerfFixRecord record, string consent = null)
         {
             var outcome = new PerfFixOutcome();
             if (!CanUndo(record))
@@ -261,7 +274,21 @@ namespace PerfAgent.Analysis
                 : "没有需要还原的项（可能已被手动改回）。";
             outcome.needsReanalyze = outcome.success;
             PerfChangeLog.MarkUndone(record);
+
+            PerfHistory.RecordOperation(ActorOf(consent), "undo", record.actionId, record.title,
+                record.findingId, consent, outcome.success, outcome.changedCount, outcome.message, false);
+
             return outcome;
+        }
+
+        /// <summary>
+        /// 从同意凭据推出发起方，写进操作日志的 `actor` 列。
+        /// 这里刻意不做「根据来源放宽门禁」之类的事 —— 它只影响日志，不影响权限。
+        /// </summary>
+        static string ActorOf(string consent)
+        {
+            if (string.IsNullOrEmpty(consent)) return "human";
+            return consent.StartsWith("mcp:", StringComparison.OrdinalIgnoreCase) ? "mcp" : "ai";
         }
 
         // =====================================================================

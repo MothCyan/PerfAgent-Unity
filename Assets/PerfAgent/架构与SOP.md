@@ -1,0 +1,247 @@
+# PerfAgent 架构 / MCP 通道 / 加密 / 持久化 / AI SOP
+
+> 本文是**唯一**的架构事实来源。模块怎么分、谁负责什么、AI 能做什么不能做什么、
+> 加密与日志留在哪个接口，都以这里为准。`开发计划.md` 只负责排期，不重复这些约定。
+
+---
+
+## 一、一页总览
+
+```
+                        ┌──────────────────────────────────────────────┐
+   人（Unity 面板）      │  L5 交互层   PerfAgentWindow / Settings / 探针 │
+                        └───────────────┬──────────────────────────────┘
+                                        │  只调下面几层的公开接口
+        ┌───────────────────────────────┴───────────────────────────────┐
+        │  L4 AI 编排层   AgentLoop（SOP 状态机）+ LlmClient + SopDefinition │
+        └───────────────┬───────────────────────────────┬───────────────┘
+                        │ 工具调用（只读）                │ 同意门（写操作）
+        ┌───────────────┴───────────────┐   ┌───────────┴───────────────┐
+        │ L3 通道层 ToolRegistry（Agent）│   │  L3'MCP 桥接层（可选包）    │
+        │              —— 进程内，只读   │   │  perf_* 工具 + 同意凭据     │
+        └───────────────┬───────────────┘   └───────────┬───────────────┘
+                        │                               │
+        ┌───────────────┴───────────────────────────────┴───────────────┐
+        │  L2 分析层   PerfRuleEngine / PerfDiff / PerfFixPlan / 报告导出   │
+        └───────────────┬───────────────────────────────────────────────┘
+                        │
+        ┌───────────────┴───────────────────────────────────────────────┐
+        │  L1 采集层   PanelCapture + ProfilerPanel + 9 个采集器 + 实时波形 │
+        └───────────────┬───────────────────────────────────────────────┘
+                        │
+        ┌───────────────┴───────────────────────────────────────────────┐
+        │  L0 数据/持久化   PerfSnapshotStore · PerfHistory（JSONL/SQLite）│
+        └───────────────────────────────────────────────────────────────┘
+
+   贯穿各层的横切模块：ProfilerOwnership（资源借还）· SecretProtection（敏感数据）·
+                       SopDefinition（流程与门禁）· PerfOperationLog（审计）
+```
+
+**执行层只在一个地方**：`PerfFixExecutor`。它是整份代码里唯一会改工程文件的类，
+所有写操作都必须经过它，这样「同意门 + 审计 + 撤销」只需要在这一个点上守住。
+
+---
+
+## 二、模块职责（含「不负责什么」）
+
+| 模块 | 负责 | **不负责（越界清单）** | 对外接口 | 关键文件 |
+|---|---|---|---|---|
+| **L1 采集** | 打开/归还 Profiler、确定帧窗口、读面板序列与帧视图、把结果汇总成指标 | 不分析、不下结论、不碰工程资源 | `PanelCapture.Start/Stop`、`ProfilerPanel.Read`、`CaptureLiveStats` | `Core/PanelCapture.cs`、`Core/ProfilerPanel.cs`、`Core/CaptureLiveStats.cs`、`Collectors/*` |
+| **L2 分析** | 规则判定、跨快照对比、把一个结论翻译成「可执行动作 + 人工步骤」 | 不改任何东西；不产生没有证据的数值 | `PerfRuleEngine.Evaluate`、`PerfDiff.Compare`、`PerfFixPlan.Build` | `Analysis/PerfRuleEngine.cs`、`PerfDiff.cs`、`PerfFixPlan.cs` |
+| **L3 通道（进程内）** | 把 L1/L2 的能力暴露成 Agent 工具，做限流、隐私过滤、结果裁剪 | **不提供任何写操作**；不解释数据 | `ToolRegistry.All()` | `Agent/ToolRegistry.cs` |
+| **L3′ MCP 桥接（可选包）** | 把同一批能力暴露给外部 MCP 客户端；**未来承载「AI 操作」的唯一入口** | 不自己实现分析逻辑；不绕过同意门 | `perf_*` 工具 | `PerfAgent.McpForUnity/Editor/PerfAgentMcpTools.cs` |
+| **L4 AI 编排** | SOP 阶段推进、组装上下文、调用工具、把结论讲清楚 | 不编数值；不越过同意门执行；不直接读写工程 | `AgentLoop.Ask`、`SopDefinition` | `Agent/AgentLoop.cs`、`Agent/SopDefinition.cs` |
+| **L5 交互** | 展示、按钮、弹窗确认、复制/导出 | 不自己算分析结果；不绕过 `PerfFixExecutor` | `PerfAgentWindow` | `UI/*` |
+| **执行** | 真正改工程：导入设置 / 工程设置 / 场景对象；记录可撤销的还原信息 | 只在人点了确认（或 MCP 带同意凭据）后才跑；不做「批量猜」 | `PerfFixExecutor.Execute/Revert` | `Analysis/PerfFixExecutor.cs`、`PerfChangeLog.cs` |
+| **持久化** | 快照、分析目录、操作日志 | 不参与判定；写日志失败绝不中断主流程 | `IAnalysisStore`、`PerfHistory` | `Core/IAnalysisStore.cs`、`JsonlAnalysisStore.cs`、`Core/JsonlLog.cs` |
+| **安全** | 敏感数据（API Key、导出包）的保护接口 | 现在**不加密**，只留替换点（见第五节） | `ISecretProtector`、`SecretProtection` | `Core/SecretProtection.cs` |
+| **Profiler 借还** | 记录开关的 acquire/release、面板历史上限、域重载兜底归还 | 不关心业务；不做控制流 | `ProfilerOwnership.Acquire/Release` | `Core/ProfilerOwnership.cs` |
+
+---
+
+## 三、一次完整流程（含门禁与日志落点）
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant W as 面板(L5)
+    participant C as 采集(L1)
+    participant A as 分析(L2)
+    participant AI as AI 编排(L4)
+    participant X as 执行
+    participant G as 持久化(L0)
+
+    U->>W: 点「跟随采集」
+    W->>C: 借 Profiler + 记窗口起点
+    C-->>W: 实时帧率波形（4 Hz）
+    U->>U: 自己进 Play 操作（工具不控制 Play）
+    U->>W: 再点一次（或退出 Play）
+    W->>C: 停止 + 读面板数据
+    W->>A: 汇总 → 跑规则 → 生成修复计划
+    A->>G: 写 index.jsonl（分析目录）
+    A-->>W: 结论 + 证据链 + 修复计划
+    W->>AI: （可选）带历史上下文追问
+    AI-->>W: 解释 / 排序 / 建议（只读，不许改）
+    U->>W: 点某条动作的「执行」→ 弹窗确认
+    W->>X: Execute(step, findingId, consent=null)
+    X->>G: 写 operations.jsonl（actor=human, consent=空）
+    X-->>W: 结果 + 撤销信息
+    W->>A: 自动重跑审计 → 对比快照（S7 验证）
+```
+
+**门禁（S5）是硬边界**：AI 与 MCP 都只能停在「提出动作清单」，
+只有人点确认（面板）或带着有效同意凭据（MCP 通道）才能走到 S6。
+
+---
+
+## 四、AI 操作通道：为什么必须是 MCP
+
+### 4.1 不用 MCP 会怎样（如实说）
+
+| 能力 | 没有 MCP | 有 MCP |
+|---|---|---|
+| 读数据、出结论 | ✅ 面板里可用（这已经比 Profiler 多：**规则 + 证据链 + 修复计划 + 对比**，不是一个汇总查询） | ✅ 同一个 `PerfPipeline`，数字完全一致 |
+| **改工程** | ❌ 只能人自己点，AI 无从插手 | ✅ 外部客户端可发起，走同意门 |
+| 让别的 AI（Claude Desktop / VS Code / CI）参与 | ❌ 每个客户端都要写一套适配 | ✅ 一套标准协议 |
+| 流程可复用、可审计 | ❌ 每次都是人肉操作 | ✅ 调用即留痕 |
+
+结论（也回应「你只是做了一个汇总查询」）：
+**分析部分不是汇总查询** —— 9 类采集 + 20+ 规则 + 证据链 + 可撤销修复计划是实打实的工程；
+但**「AI 操作」这件事，没有 MCP 就真的做不了**，因为没有一个标准化、可被外部客户端调用的操作通道。
+
+### 4.2 MCP 通道的设计（P11 实施）
+
+```
+外部客户端 ── MCP ──► 桥接层（可选包）
+                        ├─ 只读工具：snapshots / findings / metrics / fix_plan / static_audit
+                        └─ 操作工具（新增）：
+                             perf_list_pending_actions   ← 列出待执行动作（含风险/影响面）
+                             perf_request_consent        ← 发起同意请求（在 Unity 面板弹出确认）
+                             perf_execute_action         ← 必须带 consent_id，否则拒绝
+                             perf_undo_action            ← 撤销，同样写审计
+```
+
+**三条不可协商的约束**（写在桥接层里，不靠提示词）：
+
+1. **同意门**：`perf_execute_action` 必须带 `consent_id`；该 id 由人在 Unity 面板上
+   点击确认后生成并有**有效期**（建议 5 分钟、一次性），没有它一律拒绝执行；
+2. **审计**：每次执行/撤销都会往 `Log/operations.jsonl` 写一条，
+   `actor=mcp`、`consent=mcp:<client>` —— 事后能回答「谁授意的」；
+3. **降级安全**：桥接包没装 / MCP 没连上时，工具照常只读可用（面板功能不受影响）。
+
+> 现状：桥接层目前**刻意只读**（没有任何写入口），操作工具是 P11 的内容 ——
+> 也就是说「AI 操作」这条路现在是**预留好的、但还没开**。
+
+---
+
+## 五、加密与敏感数据：只留接口
+
+**现状：不加密，但已经留好唯一替换点。**
+
+| 项 | 现状 | 接入时怎么做 |
+|---|---|---|
+| API Key | `SecretProtection.Protect/Unprotect`（默认 `PlaintextProtector`：Base64 混淆，**明确标注不是加密**） | 注册一个真实现：Windows DPAPI / macOS Keychain / Linux libsecret；取不到就退回「不落盘，只读环境变量」 |
+| 设置面板显示 | 显示当前实现名 + `⚠ 当前不提供加密保护` | 换实现后自动显示为已加密，用户看得见 |
+| 导出包（`.perfagent`） | 文件格式已预留 `enc` 字段：`"plaintext"` | 用一次性对称密钥（AES-GCM）+ 口令派生（PBKDF2/Argon2）写入 `enc:"aes-gcm-v1"`，密钥随口令，**不用固定内置密钥**（那等于没加密） |
+
+红线：
+- 任何「以为加密了其实没加密」的状态都不允许存在（`IsEncrypting` 会显示给用户）；
+- 密钥不写进版本库、不进快照、不进导出包；
+- 隐私开关（`allowSourceCodeUpload`）与加密是两件事，都必须生效。
+
+---
+
+## 六、持久化与流程追溯
+
+```
+ProjectSettings/PerfAgent/
+├── Snapshots/              完整快照（每次分析的结果）
+└── Log/
+    ├── index.jsonl         分析目录：哪次分析、什么场景、帧数、结论数、数据来源
+    └── operations.jsonl    操作日志：改了什么、谁发起、谁同意、结果、能否撤销、是否已撤销
+```
+
+**为什么先用 JSONL（而不是直接上 SQLite）**
+
+1. 需求是「追加 + 顺序读 + 给人看 + 给 AI 当上下文」，不是复杂查询；
+2. 零第三方依赖是主包的既有承诺（引入 SQLite 要带原生库与平台分支）；
+3. `type operations.jsonl` 就能读，也能整份喂给模型 —— 这正是「让 AI 有上下文」最省事的形态。
+
+**换 SQLite 的路径**（接口已经留好）
+
+```csharp
+// 只要实现同一个接口，上层一行都不用改：
+public class SqliteAnalysisStore : IAnalysisStore { ... }
+JsonlAnalysisStore.Current = new SqliteAnalysisStore();   // 启动处替换
+```
+表结构直接照 `AnalysisIndexRecord` / `OperationRecord` 的字段建；迁移时用 JSONL 回灌。
+
+**审计字段（最小集，必须都有）**
+
+| 字段 | 含义 | 为什么必须有 |
+|---|---|---|
+| `utc` | 时间 | 排序与追责 |
+| `actor` | human / ai / mcp | 区分「人做的」还是「AI 做的」 |
+| `kind` / `actionId` | fix / undo / capture / export + 动作 id | 能对上代码里的执行器 |
+| `consent` | 空 = 面板人工确认；`mcp:<client>` = 外部客户端批准的 | **回答「谁授意的」** |
+| `success` / `changedCount` / `message` | 结果 | 失败也要留痕 |
+| `canUndo` / `undone` | 能不能撤、撤了没 | 流程可回退 |
+
+对 AI 的用法：`PerfHistory.Digest()` 会把最近的分析目录与操作日志压成紧凑文本，
+自动注入系统提示词（含「同意来源」），让模型知道**已经做过什么、被谁批准过**，
+而不是每次从零开始猜。
+
+---
+
+## 七、AI SOP（标准操作流程）
+
+> 前提：**AI 不可能不出错**。所以流程不靠「提示模型要谨慎」，而是靠阶段 + 白名单 + 门禁 + 日志。
+
+| 阶段 | 输入 | 允许的工具 | 输出 | 门禁 |
+|---|---|---|---|---|
+| **S1 目标确认** | 用户描述（掉帧 / 卡顿 / 内存涨） | `list_snapshots` `load_snapshot` `get_budget` | 要查什么、范围是什么 | 目标不明确就先问，不许瞎查 |
+| **S2 采集（人操作）** | — | **无**（工具不控制 Play） | 引导用户点「跟随采集」并自己操作 | 工具**没有**替用户进 Play 的入口 |
+| **S3 只读分析** | 快照 | `get_summary/metrics/frames/markers/findings/asset_issues/scene_issues/code_issues` | 结论候选 + 证据 | 没有证据不下结论 |
+| **S4 提方案** | 结论 | `get_fix_plan` `diff_snapshots` `run_rules` `rerun_audit` | 动作清单（目标 / 影响面 / 风险 / 回滚） | 每条动作必须四要素齐全 |
+| **S5 等同意** | 动作清单 | **无** | 交给用户确认 | **停**。AI 不得自行继续 |
+| **S6 执行** | 同意凭据 | 面板按钮 / MCP `perf_execute_action(consent_id)` | 执行结果 + 撤销信息 | 无凭据一律拒绝 |
+| **S7 验证** | 执行后的工程 | `rerun_audit` `diff_snapshots` `get_metrics` `get_findings` | 改善 / 没变 / 变差 | 不许跳过验证就宣布成功 |
+| **S8 交付** | 结论 + 过程 | `export_report` `get_fix_plan` | 报告（可复制 / 可导出） | 数据局限要写清楚 |
+
+**硬规则（代码里就是 `SopDefinition.HardRules`，面板可见）**
+
+1. R1 没有证据不下结论：数值只能来自工具返回，禁止估算；
+2. R2 数据不足写「无法归因」，不给偏小的数充当结论；
+3. R3 改工程前必须给出：目标 / 影响面 / 风险等级 / 回滚方式；
+4. R4 没有人工同意不得执行，同意来源必须写进日志；
+5. R5 执行后必须验证并把结果写回日志；
+6. R6 失败如实报告，不许用重试掩盖；改一半必须能撤销；
+7. R7 原始帧数据不进上下文；
+8. R8 隐私开关生效时不外传源码片段与绝对路径。
+
+**失败处理**：任一阶段失败 → 写日志（`success=false` + 原因）→ 能回退就回退（`undo`）
+→ 把「哪一步失败、当前工程处于什么状态」如实告诉用户，不进入下一阶段。
+
+---
+
+## 八、扩展点：想做 X，改哪里
+
+| 想做的事 | 改哪个文件 | 满足的接口 | 验收 |
+|---|---|---|---|
+| 加一类采集（如动画 / 粒子 / Canvas） | `Collectors/` 新增采集器 | `IPerfCollector` + 注册到 `CollectorRegistry` | 出现在「明细」标签，且报告能引用 |
+| 加一条规则 | `Analysis/PerfRuleEngine.cs` 加 `EvaluateXxx` | 用 `New/Ev` 造结论与证据 | 有对应 gold standard 用例 |
+| 加一个 Agent 工具 | `Agent/ToolRegistry.cs` | `Tool(name, desc, Schema, impl)` | 同步实现；写操作一律不许加 |
+| 加一个 MCP 工具 | `PerfAgent.McpForUnity/Editor/PerfAgentMcpTools.cs` | `[McpForUnityTool]` | 只读 / 或带同意凭据 |
+| 加一个可执行修复 | `Analysis/PerfFixExecutor.cs`（或 `PerfFixExecutorExtended`） | `CanExecute` + 还原信息 | 风险分级 + 可撤销 + 写审计 |
+| 换持久化后端 | 实现 `IAnalysisStore` | 替换 `JsonlAnalysisStore.Current` | 面板显示后端名；迁移脚本可回灌 |
+| 接真加密 | 实现 `ISecretProtector` | `SecretProtection.Register(...)` | 设置面板显示已加密；导出包 `enc` 字段变化 |
+| 换 LLM 供应商 | 无（OpenAI 兼容即可） | `LlmClient` | 「测试连接」通过 |
+| 加 UI 视图 | `UI/PerfAgentWindow.cs` 加标签 | — | 只调下层接口，不自己算数 |
+
+---
+
+## 九、与开发计划的对应
+
+- **P11（AI 操作通道与治理）**：MCP 操作工具 + 同意门 + 凭据 + 审计 + SOP 状态机落地 + SOP 标签页；
+- **P12（数据与安全）**：SQLite 后端（可选）、真加密实现、导出加密包 `.perfagent`；
+- 现状与已完成项见 `开发计划.md` 第八、九节。

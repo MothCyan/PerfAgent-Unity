@@ -78,7 +78,7 @@
 | 边界 | 落地方式 |
 |---|---|
 | 不许编数值 | 所有数值只能来自工具返回值；报告带幻觉校验；没数据就写「没有数据」，而不是估算 |
-| 不许改工程 | Agent 工具集里**不存在**任何写操作入口；一键修复的执行按钮只在 Unity 面板里，且必须人点 |
+| 不许改工程 | Agent 工具集里**不存在**任何写操作入口；改工程只能通过面板按钮或 MCP 操作通道（需人批准的同意凭据），且执行/撤销全部写进 `Log/operations.jsonl` |
 | 不许越过采样事实 | 数据不足（例如没测到编辑器开销基线）时必须写「无法归因」，不给一个偏小的数 |
 
 一句话：**规则引擎负责「不撒谎」，LLM 负责「像个人一样帮你判断且能对话」**。前者让结论可信，后者让结论可用。
@@ -127,6 +127,11 @@ Agent 层      AgentLoop（工具循环）· LlmClient（SSE 流式）· ToolReg
 | `Editor/Core/PerfConversationStore.cs` | 会话持久化（对话文本 + LLM 上下文） |
 | `Editor/Core/PerfAgentMcpIntegration.cs` | MCP 集成开关（启用/禁用/状态） |
 | `Editor/Agent/ToolRegistry.cs` | Agent 工具集（已做限流与隐私过滤） |
+| `Editor/Agent/SopDefinition.cs` | AI 的 SOP：阶段划分 + 每阶段允许的工具 + 硬规则 |
+| `Editor/Core/IAnalysisStore.cs` | 持久化接口（分析目录 + 操作日志；SQLite 后端换在这里） |
+| `Editor/Core/JsonlAnalysisStore.cs` | 默认后端：JSONL + 给 AI 的历史摘要 |
+| `Editor/Core/SecretProtection.cs` | 敏感数据保护接口（现在不加密，只留替换点） |
+| `架构与SOP.md` | **架构唯一事实来源**：模块职责、MCP 通道、加密、持久化、AI SOP |
 | `Editor/Agent/LlmClient.cs` | OpenAI 兼容客户端（流式，含非流式回退） |
 | `Editor/Agent/AgentLoop.cs` | 工具调用循环 + 防幻觉闸门 |
 | `Editor/UI/*` | 主面板、API 探针、配置页、LLM 配置窗口 |
@@ -164,7 +169,7 @@ Agent 层      AgentLoop（工具循环）· LlmClient（SSE 流式）· ToolReg
 
 | 约束 | 做法 |
 |---|---|
-| 绝不自动执行 | 只有用户在结论卡片里点「执行」才会改东西；Agent 那边只有只读的 `get_fix_plan`，工具集里不存在修改入口 |
+| 不自动执行 | 只有用户在结论卡片里点「执行」才会改东西；Agent 工具集里**不存在**修改入口。后续的 MCP 操作通道也必须带「人批准过的同意凭据」，且每次执行都写审计日志 |
 | 改什么先说清楚 | 点击后弹窗列出：动作、具体改哪个属性、影响多少个目标（含路径清单）、预期收益、风险等级 |
 | 风险分级 | `safe`（只影响内存/开销）/ `moderate`（会改导入结果或运行时行为）/ `risky`（可能影响玩法，如去掉碰撞体、关闭 BlendShape、标记 Static） |
 | 可撤销 | 每个动作把「改前的值」写进变更日志，「变更」标签里可逐条撤销 |
@@ -444,7 +449,7 @@ MCP 侧的正确用法：`perf_follow_capture_start` 进入待命 → **提示�
 ### 两条边界
 
 1. **没有、也不会有「执行一键修复」的 MCP 工具。** 外部模型可以读结论、看修复计划，
-   但真正改工程资源必须由人在 Unity 面板里点击确认 —— 让外部模型直接批量改导入设置风险太大。
+   但真正改工程资源必须**过人这一关** —— 要么人在 Unity 面板里点确认，要么走 MCP 操作通道并带上人批准过的同意凭据（每次执行都写审计日志，可撤销）。
 2. **数据同源。** MCP 返回的内容与面板、内置 Agent 走的是同一条 `PerfPipeline` + `PerfSnapshotStore`，
    不会出现「MCP 看到一套数、面板看到另一套」。
 
@@ -531,6 +536,25 @@ MCP 侧的正确用法：`perf_follow_capture_start` 进入待命 → **提示�
 - **P7 起**是后续计划：采集完整性（分段采集 / 面板清空检测 / 口径补全）、真机与流水线
   （Development Build + Autoconnect、CLI/CI）、规则与修复面扩展、工程化发布。
   当前最大的功能边界是 **面板帧历史约 2000 帧** —— 长会话只能覆盖最近一段，P7-1 专门解决它。
+
+## 流程追溯：日志与目录
+
+每次分析、每次改工程都会落盘，方便事后追责与给 AI 当上下文：
+
+```
+ProjectSettings/PerfAgent/Log/index.jsonl       分析目录：哪次分析 / 场景 / 帧数 / 结论数 / 数据来源
+ProjectSettings/PerfAgent/Log/operations.jsonl  操作日志：改了什么 / 谁发起 / 谁同意 / 结果 / 能否撤销
+```
+
+- 两边都是 JSONL，一行一条，`type index.jsonl` 就能读，也能整份丢给模型当上下文；
+- `operations.jsonl` 的 `consent` 列回答「**谁授意的**」：空 = 面板上人工确认，`mcp:<client>` = 外部客户端经同意门批准；
+- 最近的分析与操作会被压成摘要自动接进系统提示词，AI 不需要从零猜「已经做过什么」；
+- 后端是可换的：实现 `IAnalysisStore` 即可换成 **SQLite**（表结构照 record 字段建，用 JSONL 回灌），
+  上层一行不用改；默认先用 JSONL 是因为它零依赖、可读、可直接当上下文；
+- 敏感数据（API Key、导出包）的保护走 `ISecretProtector`：**现在是明文并会明确标注**，
+  接入 DPAPI / Keychain / libsecret 时分只需注册一个实现（见 `架构与SOP.md` 第五节）。
+
+> 模块划分、MCP 操作通道、加密与持久化接口、AI 的标准操作流程（SOP）全部写在 `架构与SOP.md`。
 
 ## 回归测试
 
