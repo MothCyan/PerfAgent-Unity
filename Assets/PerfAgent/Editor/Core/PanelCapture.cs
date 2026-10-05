@@ -47,8 +47,6 @@ namespace PerfAgent.Core
         readonly Action<float> _onProgress;
         readonly Stopwatch _clock = new Stopwatch();
 
-        bool _profilerWasEnabled;
-        bool _restoreProfilerState;
         double _nextPoll;
         int _pollIntervalMs = 250;
 
@@ -82,13 +80,10 @@ namespace PerfAgent.Core
             startFrame = -1;
             CapturedCount = 0;
 
-            // 面板在记录，才有帧可读。用户自己开着 Profiler 时不改动他的设置。
-            _profilerWasEnabled = ProfilerApi.Enabled;
-            if (!_profilerWasEnabled)
-            {
-                ProfilerApi.Enabled = true;
-                _restoreProfilerState = true;
-            }
+            // 面板在记录，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
+            // 以前在这里手写「开 / 关」，进 Play 时的域重载会把关掉那一步吃掉，
+            // 结果编辑器一直逐帧记录，Profiler 帧数据把系统内存吃光。
+            ProfilerOwnership.Acquire(false);
 
             // 窗口从「现在之后的第一帧」开始（这里之后录进来的都是被测期间）
             startFrame = ProfilerApi.LastFrameIndex;
@@ -124,24 +119,22 @@ namespace PerfAgent.Core
             EditorApplication.update -= Poll;
             _clock.Stop();
 
-            if (_restoreProfilerState)
-            {
-                ProfilerApi.Enabled = false;
-                _restoreProfilerState = false;
-            }
-
             if (!invokeCallback || _onDone == null)
             {
                 StatRecorder.Dispose(ref _gcAllocRegistration);
+                ProfilerOwnership.Release();
                 return;
             }
 
+            // 先把已录下来的帧读完，再归还开关并释放帧数据
             int last = ProfilerApi.LastFrameIndex;
             PanelCaptureData data = startFrame < 0
                 ? new PanelCaptureData { unavailableReason = "采集还没开始就结束了" }
                 : ProfilerPanel.Read(startFrame + 1, last, ProfilerPanel.MaxSamples, warmupSeconds);
 
             StatRecorder.Dispose(ref _gcAllocRegistration);
+            ProfilerOwnership.Release();
+
             _onDone(data);
         }
 

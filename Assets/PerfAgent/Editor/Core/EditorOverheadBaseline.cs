@@ -150,11 +150,9 @@ namespace PerfAgent.Core
             Invalidate();
             Measuring = true;
 
-            bool profilerWasEnabled = ProfilerApi.Enabled;
-            bool profileEditorWas = ProfilerApi.ProfileEditor;
-
-            if (!profilerWasEnabled) ProfilerApi.Enabled = true;
-            if (!profileEditorWas) ProfilerApi.ProfileEditor = true;
+            // 非 Play 模式下必须同时打开 enabled 与 profileEditor，否则面板不记录编辑器帧
+            // （0 帧的根因）；借还、历史上限、域重载兜底都在 ProfilerOwnership 里。
+            ProfilerOwnership.Acquire(true);
 
             // 从这里之后录进来的帧就是「编辑器空转」的帧
             int startFrame = ProfilerApi.LastFrameIndex;
@@ -169,8 +167,6 @@ namespace PerfAgent.Core
             Action<int> finish = delegate (int endFrame)
             {
                 EditorApplication.update -= tick;
-                if (!profilerWasEnabled) ProfilerApi.Enabled = false;
-                if (!profileEditorWas) ProfilerApi.ProfileEditor = false;
 
                 // endFrame > 0：测量被「进入 Play」打断 —— 只读打断之前那段编辑模式帧，
                 // 之后的帧是 Play 帧，不是「编辑器空转」，算进来会把基线抬高。
@@ -207,6 +203,10 @@ namespace PerfAgent.Core
                 }
 
                 StatRecorder.Dispose(ref recorder);
+
+                // 样本已经读完，立刻归还开关并释放我们录下来的帧数据
+                ProfilerOwnership.Release();
+
                 Measuring = false;
                 if (onDone != null) onDone();
             };
