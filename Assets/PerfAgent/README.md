@@ -469,8 +469,13 @@ MCP 侧的正确用法：`perf_follow_capture_start` 进入待命 → **提示�
 
 ## 路线图
 
-见 `开发计划.md`。P0 ~ P5 已实现（骨架 + 采集 + 规则 + Agent + UI + gold-standard 回归），
-P6 已包含 UPM 包、CI、README 与示例。
+见 `开发计划.md`。
+
+- **P0 ~ P5** 已实现（骨架 + 采集 + 规则 + Agent + UI + gold-standard 回归）；
+- **P6** 已包含 UPM 包、CI、README 与示例（`.tgz` 发布待做）；
+- **P7 起**是后续计划：采集完整性（分段采集 / 面板清空检测 / 口径补全）、真机与流水线
+  （Development Build + Autoconnect、CLI/CI）、规则与修复面扩展、工程化发布。
+  当前最大的功能边界是 **面板帧历史约 2000 帧** —— 长会话只能覆盖最近一段，P7-1 专门解决它。
 
 ## 回归测试
 
