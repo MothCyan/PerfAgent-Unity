@@ -60,7 +60,11 @@ namespace PerfAgent.RuleRegression
                 ColumnLayoutDetectsUnity2022HierarchyColumns,
                 ColumnLayoutExcludesTimestampColumns,
                 ColumnLayoutParsesBareDecimalsAsTime,
-                ColumnLayoutParsesByteUnits
+                ColumnLayoutParsesByteUnits,
+                WaveformKeepsNewestWhenFull,
+                WaveformIgnoresInvalidSamples,
+                WaveformPercentilesUseNearestSample,
+                WaveformChartCeilingNeverTinyAndClears
             };
 
             var failed = 0;
@@ -972,6 +976,68 @@ namespace PerfAgent.RuleRegression
             True(!snapshot.HasRecorderGcAlloc(), "missing recorder counter must be reported as unavailable");
             True(double.IsNaN(snapshot.AvgRecorderAllocPerFrame()),
                 "unavailable recorder must return NaN so callers degrade explicitly instead of using a wrong number");
+        }
+
+        // =====================================================================
+        // 实时帧率波形（面板上那条曲线用的就是它）
+        //
+        // 这批用例盯的是两件事：环缓冲写满后只能丢最旧的；
+        // 以及「无效读数」绝不能进统计 —— 那会凭空把分位数拉低、造出好数据。
+        // =====================================================================
+        static void WaveformKeepsNewestWhenFull()
+        {
+            var w = new FrameWaveform(4);
+            for (int i = 1; i <= 6; i++) True(w.Push(i), "push " + i);
+
+            Equal(4, w.Count, "样本数必须被容量卡住");
+            Equal(3.0, w[0], "最旧的三个应被丢掉");
+            Equal(6.0, w[3], "最新样本必须落在末尾");
+            Equal(6.0, w.MaxMs(), "峰值");
+            True(w.IsFull, "写满后要能报出来");
+        }
+
+        static void WaveformIgnoresInvalidSamples()
+        {
+            var w = new FrameWaveform(8);
+
+            True(!w.Push(0), "0 是「没读到」，不是「超快的一帧」");
+            True(!w.Push(-1), "负数必须拒绝");
+            True(!w.Push(double.NaN), "NaN 必须拒绝");
+            True(!w.Push(double.PositiveInfinity), "无穷大必须拒绝");
+            Equal(0, w.Count, "上面都不该产生样本");
+            Equal(0.0, w.Fps(), "没有样本时不编帧率");
+
+            True(w.Push(10), "有效样本");
+            Equal(100.0, w.Fps(), "帧率由 P50 换算");
+        }
+
+        static void WaveformPercentilesUseNearestSample()
+        {
+            var w = new FrameWaveform(100);
+            for (int i = 1; i <= 100; i++) w.Push(i);
+
+            Equal(1.0, w.MinMs(), "最小");
+            // 1..100 的「最近样本」中位是第 51 个（偶数个样本取上中位）——
+            // 这个口径必须与快照里的统计一致，否则界面曲线与事后报告会对不上
+            Equal(51.0, w.P50Ms(), "P50");
+            Equal(95.0, w.P95Ms(), "P95");
+            Equal(100.0, w.MaxMs(), "峰值");
+            True(w.Fps() > 19.5 && w.Fps() < 19.7, "帧率 = 1000 / P50");
+        }
+
+        static void WaveformChartCeilingNeverTinyAndClears()
+        {
+            var w = new FrameWaveform(4);
+
+            w.Push(8.0);
+            Equal(33.0, w.ChartCeilingMs(), "平稳的 120 FPS 不能画成满格噪点");
+
+            w.Push(90.0);
+            Equal(90.0, w.ChartCeilingMs(), "真出现尖峰时纵轴要跟着抬高");
+
+            w.Clear();
+            Equal(0, w.Count, "清空");
+            Equal(33.0, w.ChartCeilingMs(), "空曲线仍给一个不零平的纵轴");
         }
 
         static void Equal(double expected, double actual, string label)

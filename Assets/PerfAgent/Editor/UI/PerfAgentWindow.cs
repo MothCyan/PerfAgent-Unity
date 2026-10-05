@@ -18,6 +18,9 @@ namespace PerfAgent.UI
 
         // 布局
         Label _status;
+        VisualElement _liveHost;
+        VisualElement[] _liveBars;
+        Label _liveLabel;
         ScrollView _snapshotHost;
         ScrollView _detailHost;
         Label _transcript;
@@ -34,6 +37,10 @@ namespace PerfAgent.UI
         /// </summary>
         double _nextFollowPoll;
         int _lastFollowFrames = -1;
+
+        /// <summary>采集期间的实时帧率曲线（采集开始才开始填，结束后冻结保留）。</summary>
+        readonly CaptureLiveStats _live = new CaptureLiveStats();
+        bool _liveActive;
 
         VisualElement _tabRow;
         /// <summary>LLM 配置状态条：让用户不用去 Project Settings 就能看到当前状态并就地配置。</summary>
@@ -183,6 +190,10 @@ namespace PerfAgent.UI
             _status.style.color = new Color(0.75f, 0.78f, 0.82f);
             root.Add(_status);
 
+            _liveHost = BuildLiveStrip();
+            _liveHost.style.display = DisplayStyle.None;   // 有样本了才显示
+            root.Add(_liveHost);
+
             var columns = new VisualElement();
             columns.style.flexDirection = FlexDirection.Row;
             columns.style.flexGrow = 1;
@@ -230,7 +241,10 @@ namespace PerfAgent.UI
             RefreshSnapshots();
             RefreshDetails();
             RefreshLlmStatus();
-            AppendTranscript("**性能诊断 Agent**\n\n点击「抓帧」采集运行时数据，然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n");
+            AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**自己进 Play 操作**（战斗、开背包、切界面都算），"
+                + "面板上方会实时显示帧率波形；结束时再点一次「跟随采集」或直接退出 Play，数据会自动分析。\n"
+                + "然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n"
+                + "\n要贴给别人（或丢给外部 AI 继续追问），点工具栏「复制结论」。\n");
             RestoreLatestConversation();
         }
 
@@ -269,39 +283,166 @@ namespace PerfAgent.UI
         {
             if (FollowCapture.Capturing)
             {
-                int frames = FollowCapture.CapturedFrames;
-                double nowCapturing = EditorApplication.timeSinceStartup;
-                if (frames == _lastFollowFrames || nowCapturing < _nextFollowPoll) return;
+                double now = EditorApplication.timeSinceStartup;
+                if (now < _nextFollowPoll) return;
 
-                _lastFollowFrames = frames;
-                _nextFollowPoll = nowCapturing + 0.25;
-                SetStatus("跟随采集中（你自己操作）：Profiler 已记录 " + frames
-                    + " 帧。结束时点「跟随采集」按钮，或直接退出 Play。");
+                // 固定 4 Hz 刷新（不跟帧数变化挂钩）：帧率平稳时也要往前走，否则曲线会「卡住」看不出正在监视
+                _nextFollowPoll = now + CaptureLiveStats.SampleIntervalSeconds;
+
+                int frames = FollowCapture.CapturedFrames;
+                if (!_liveActive)
+                {
+                    // 采集刚开：把波形起点对齐到这次采集的起点（面板帧号 − 已记录帧数）
+                    _liveActive = true;
+                    _live.Begin(ProfilerApi.LastFrameIndex - frames, now);
+                }
+
+                _live.Sample(ProfilerApi.LastFrameIndex, now);
+                RefreshLiveStrip(true);
+
+                if (frames != _lastFollowFrames)
+                {
+                    _lastFollowFrames = frames;
+                    string summary = _live.Summary(true);
+                    SetStatus(summary.Length > 0
+                        ? summary
+                        : ("跟随采集中（你自己操作）：Profiler 已记录 " + frames + " 帧。"));
+                }
                 return;
             }
 
-            if (_lastFollowFrames < 0) return;
+            if (_liveActive)
+            {
+                // 从「采集中」变为「已结束」：冻结波形（保留最后一段曲线），并补一次终态提示
+                _liveActive = false;
+                _lastFollowFrames = -1;
+                RefreshLiveStrip(false);
 
-            // 从「采集中」变为「已结束」：补一次终态提示（快照已由 FollowCapture 落盘）
-            _lastFollowFrames = -1;
+                SetStatus(string.IsNullOrEmpty(FollowCapture.LastSnapshotId)
+                    ? "跟随采集已结束（本次没有生成快照）"
+                    : ("跟随采集已结束，快照 " + FollowCapture.LastSnapshotId
+                       + " 已生成 —— 结论在「结论」标签，要贴给别人就点「复制结论」。"));
+                return;
+            }
+
             if (FollowCapture.Armed)
             {
-                SetStatus("跟随采集已待命：进入 Play 模式后会自动开始记录。点「跟随采集」可取消。");
+                if (_nextFollowPoll <= 0)   // OnFollowCaptureChanged 会把它清零 → 只在状态变化时刷一次
+                {
+                    _nextFollowPoll = 1;
+                    SetStatus("跟随采集已待命：进入 Play 模式后会自动开始记录。点「跟随采集」可取消。");
+                }
                 return;
             }
 
-            if (!string.IsNullOrEmpty(FollowCapture.LastSnapshotId))
+            if (!string.IsNullOrEmpty(FollowCapture.LastSnapshotId) && _nextFollowPoll <= 0)
+            {
+                _nextFollowPoll = 1;
                 SetStatus("跟随采集已结束，快照 " + FollowCapture.LastSnapshotId + " 已生成。");
+            }
         }
+
+        // =====================================================================
+        // 实时帧率波形
+        //
+        // 目的：按下「跟随采集」后，帧率在跳这件事必须在面板里看得见 —— 而不是等采集结束
+        // 才从报告里读一个 P95。图的纵轴上界至少 33 ms（30 FPS），否则一个平稳的 60 FPS
+        // 过程会被画成满格噪点，看不出任何波动。
+        //
+        // 性能代价：每 0.25 秒写 120 个元素的 style。之所以能接受是因为采集期间
+        // （也就是被测期间）这个频率下算下来是每帧几十字节的分配，远低于编辑器基线；
+        // 也正因为如此，刷新必须限流（见 _nextFollowPoll 的注释）。
+        // =====================================================================
+        VisualElement BuildLiveStrip()
+        {
+            var host = new VisualElement();
+            host.style.marginTop = 4;
+            host.style.paddingLeft = 6;
+            host.style.paddingRight = 6;
+            host.style.paddingTop = 4;
+            host.style.paddingBottom = 4;
+            host.style.backgroundColor = new Color(0.11f, 0.12f, 0.14f);
+
+            _liveLabel = new Label("");
+            _liveLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            _liveLabel.style.color = new Color(0.85f, 0.88f, 0.95f);
+            _liveLabel.style.whiteSpace = WhiteSpace.Normal;
+            host.Add(_liveLabel);
+
+            var bars = new VisualElement();
+            bars.style.flexDirection = FlexDirection.Row;
+            bars.style.alignItems = Align.FlexEnd;
+            bars.style.height = 46;
+            bars.style.marginTop = 3;
+            host.Add(bars);
+
+            _liveBars = new VisualElement[CaptureLiveStats.Capacity];
+            for (int i = 0; i < _liveBars.Length; i++)
+            {
+                var bar = new VisualElement();
+                bar.style.flexGrow = 1;
+                bar.style.flexBasis = 0;
+                bar.style.marginRight = 1;
+                bar.style.height = 1;
+                bar.style.backgroundColor = new Color(0.30f, 0.32f, 0.36f);
+                bars.Add(bar);
+                _liveBars[i] = bar;
+            }
+            return host;
+        }
+
+        void RefreshLiveStrip(bool capturing)
+        {
+            if (_liveHost == null || _liveBars == null) return;
+
+            var w = _live.waveform;
+            if (w.Count == 0)
+            {
+                _liveHost.style.display = DisplayStyle.None;
+                return;
+            }
+
+            _liveHost.style.display = DisplayStyle.Flex;
+            _liveLabel.text = _live.Summary(capturing);
+
+            double ceiling = w.ChartCeilingMs();
+            int offset = _liveBars.Length - w.Count;   // 样本不足时靠右对齐（最新的在最右）
+
+            for (int i = 0; i < _liveBars.Length; i++)
+            {
+                var bar = _liveBars[i];
+                int src = i - offset;
+                if (src < 0)
+                {
+                    bar.style.height = 1;
+                    bar.style.backgroundColor = new Color(0.30f, 0.32f, 0.36f);
+                    continue;
+                }
+
+                double ms = w[src];
+                float pct = Mathf.Clamp01((float)(ms / ceiling));
+                bar.style.height = Length.Percent(Mathf.Max(2f, pct * 100f));
+                bar.style.backgroundColor = BarColor(ms);
+            }
+        }
+
+        /// <summary>单帧耗时 → 颜色：≥33 ms（<30 FPS）红，≥16.7 ms（<60 FPS）黄，其余绿。</summary>
+        static Color BarColor(double ms)
+        {
+            if (ms >= 33.0) return new Color(0.90f, 0.35f, 0.32f);
+            if (ms >= 16.7) return new Color(0.92f, 0.78f, 0.30f);
+            return new Color(0.35f, 0.75f, 0.45f);
+        }
+
 
         VisualElement BuildToolbar()
         {
-            var bar = new VisualElement();
-            bar.style.flexDirection = FlexDirection.Row;
+            var bar = new VisualElement();            bar.style.flexDirection = FlexDirection.Row;
             bar.style.flexWrap = Wrap.Wrap;
             bar.style.alignItems = Align.Center;
 
             bar.Add(ToolbarButton("跟随采集", ToggleFollowCapture));
+            bar.Add(ToolbarButton("复制结论", CopyReport));
             bar.Add(ToolbarButton("静态审计", RunStaticAudit));
             bar.Add(ToolbarButton("重新分析", delegate
             {
@@ -505,6 +646,27 @@ namespace PerfAgent.UI
             string path = PerfReportExporter.Save(PerfSession.Current, html);
             SetStatus("已导出：" + path);
             EditorUtility.RevealInFinder(path);
+        }
+
+        /// <summary>
+        /// 把当前快照的分析结果整份复制到剪贴板（Markdown）。
+        ///
+        /// 用户拿到结论后最常做的是「贴到别处」：发给同事、写进 issue、或者丢给外部 AI 继续追问，
+        /// 要求他先去导出文件再打开复制是多此一举。复制的就是导出报告用的同一份 Markdown，
+        /// 所以「看到的」与「导出的」永远一致。
+        /// </summary>
+        void CopyReport()
+        {
+            var snap = PerfSession.Current;
+            if (snap == null)
+            {
+                SetStatus("没有快照可复制：先点「跟随采集」跑一段，或从左上列表载入历史快照。");
+                return;
+            }
+
+            string md = PerfReportExporter.ToMarkdown(snap);
+            EditorGUIUtility.systemCopyBuffer = md;
+            SetStatus("已复制 Markdown 报告（" + md.Length + " 字符）：环境 / 指标 / 结论 / 修复计划都在里面。");
         }
 
         void Send()
