@@ -269,6 +269,40 @@ namespace PerfAgent.Core
             int at = pattern.LastIndexOf(" + ", StringComparison.Ordinal);
             return at > 0 ? pattern.Substring(0, at) : "";
         }
+
+        /// <summary>
+        /// 这个方法体是不是真的「每帧都跑」。
+        ///
+        /// 采集器的扫描范围里混着两类方法，必须分开说：
+        ///   - 每帧型：Update / FixedUpdate / LateUpdate / OnGUI / 渲染与动画回调 —— 里面的分配是**稳态**开销；
+        ///   - 事件型：OnCollision* / OnTrigger* / OnMouse* / OnBecame* —— 只在事件发生时执行，
+        ///     里面的 Instantiate + Destroy 是**正常游戏逻辑**（碰到才执行一次，不是每帧分配）。
+        ///
+        /// 实测踩过：优化后的样例副本被判「当前副本 6 处」，标题还写着
+        /// 「每帧方法中出现 OnCollisionEnter2D + instantiate_destroy」—— 既不实，又让优化前后的对比失真。
+        /// 分开后：Before 每帧型 41 处 / 事件型 13 处；After 每帧型 1 处 / 事件型 5 处。
+        /// </summary>
+        public static bool IsPerFrameMethod(string pattern)
+        {
+            string m = MethodName(pattern);
+            if (m.Length == 0) return true;              // 认不出方法名时按最严重的口径处理
+            for (int i = 0; i < PerFrameMethods.Length; i++)
+                if (m.StartsWith(PerFrameMethods[i], StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        /// <summary>给人看的执行时机（结论文案与报告都用它，别各写各的）。</summary>
+        public static string ExecutionTiming(string pattern)
+        {
+            return IsPerFrameMethod(pattern) ? "每帧" : "事件回调（碰撞/触发时）";
+        }
+
+        static readonly string[] PerFrameMethods =
+        {
+            "Update", "FixedUpdate", "LateUpdate", "OnGUI",
+            "OnPreRender", "OnPostRender", "OnRenderObject", "OnWillRenderObject", "OnDrawGizmos",
+            "OnAnimatorMove", "OnAnimatorIK", "OnAudioFilterRead"
+        };
     }
 
     /// <summary>

@@ -394,7 +394,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 ### 10.9 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 80 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 81 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|
@@ -407,6 +407,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `CodeFindingsAreSplitBySceneDirectory` | 只属于其它副本的代码问题降为 Info、给出 0/1 与 1/1 分组证据、跳转指向当前副本；无标记（旧快照）行为不变 |
 | `AllocGatesAreRecordedForEveryOutcome` | 分配闸门的三种结局都留记录（未过归因地板 / 通过 / 缺数据），含口径提示；底稿与本地回答都必须带上闸门口径 |
 | `CodeScanExplanationSelfProvesZero` | 扫描 0 处必须自带覆盖率与作用域；扫描没跑时不能只说「0 处」 |
+| `EventCallbackFindingsAreNotCalledPerFrame` | 碰撞/触发回调里的写法不得说成「每帧方法中出现」，级别封顶到警告，证据里写清执行时机 |
 
 ---
 
@@ -628,6 +629,18 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 6. 文档与许可都在 `Assets/PerfAgentSample/` 里（`README.md` 怎么测、`PERF-FAULTS.md` 缺陷表、
    `NOTICE.md` 改动说明、`License.md` 上游 MIT 原文）—— 放在 `Assets/` 下会被当成 TextAsset，
    好处是在 Project 窗口里直接双击就能看。
+7. **对比口径：看「每帧类」不看总数，分配看「差值」不看绝对值。**（2026-10-06 用两台快照实测出来的）
+   - 扫描器的方法白名单里混着两类方法，必须分开说：每帧型（`Update`/`FixedUpdate`/`LateUpdate`/`OnGUI`/渲染动画回调）
+     里的分配是**稳态开销**；事件型（`OnCollision*`/`OnTrigger*`/`OnMouse*`/`OnBecame*`）里的 `Instantiate`+`Destroy`
+     是**正常游戏逻辑**。不分开就会出现「标题写着『每帧方法中出现 OnCollisionEnter2D + instantiate_destroy』」这种不实结论，
+     优化前后也会被比糊。实现：`CodeIssue.IsPerFrameMethod / ExecutionTiming`，
+     采集器多两行指标「每帧类/事件类代码问题（当前场景目录）」。
+   - 实测两份样例：代码问题总数**都是 60 处**（扫描是工程级的）→ 拆开后才看得出真正的差别：
+     **每帧型 41 → 1 处（After 那处已改成缓存 → 0 处）**、事件型 13 → 5 处。
+   - 分配：Before 37740 − After 21615 = **约 16 KB/帧**，那才是注入缺陷的效果（同机同编辑器，编辑器开销互相抵消）；
+     绝对值（37153 / 21038）在编辑器里都不能当「项目分配」，After 那个只比归因地板高一点点，要坐实必须用 Player 构建版。
+   - 采集窗口：实测两次都因为「面板历史 + 暖机」被砍到 44 / 10 帧（参见 10.x 节），After 那次因为不足 30 帧，
+     统计类结论被工具主动跳过 —— 那时**只能**看代码类与资源类结论。
 
 ## 十二、离线验证与工具链（本机实测过的坑）
 

@@ -170,11 +170,15 @@ namespace PerfAgent.Collectors
                 catch { skipped++; }
             }
 
-            int inScope = 0;
+            int inScope = 0, perFrameInScope = 0;
             if (sceneScope.Length > 0)
             {
                 for (int i = 0; i < s.codeIssues.Count; i++)
-                    if (s.codeIssues[i].inSceneScope) inScope++;
+                {
+                    if (!s.codeIssues[i].inSceneScope) continue;
+                    inScope++;
+                    if (CodeIssue.IsPerFrameMethod(s.codeIssues[i].pattern)) perFrameInScope++;
+                }
             }
 
             s.SetMetric("已扫描脚本", "个", scanned, "Assets/**/*.cs（不含插件自身与 Editor 专用代码）");
@@ -183,11 +187,20 @@ namespace PerfAgent.Collectors
             {
                 s.SetMetric("代码问题数（当前场景目录）", "个", inScope,
                             "只看 " + sceneScope + " 下的脚本 —— 前后对比看这一行");
+                // 再按执行时机拆一层：每帧型才是稳态开销；事件型（碰撞/触发回调里的
+                // Instantiate + Destroy 之类）是正常游戏逻辑，两版都会有，别拿它做对比。
+                // 实测：优化前后两份样例的代码问题数一模一样（都是 60 处，因为扫描是工程级的），
+                // 拆开后才看得出真实差别 —— 每帧型 41 -> 1 处，事件型 13 -> 5 处。
+                s.SetMetric("每帧类代码问题（当前场景目录）", "个", perFrameInScope,
+                            "只看 " + sceneScope + " 下 Update/FixedUpdate/LateUpdate/OnGUI 等每帧方法体内的反模式 —— "
+                            + "优化前后对比看这一行");
+                s.SetMetric("事件类代码问题（当前场景目录）", "个", inScope - perFrameInScope,
+                            "碰撞/触发等事件回调里的写法（不是每帧分配），两版通常都有，对比时可忽略");
                 if (inScope != s.codeIssues.Count)
                 {
                     s.AddNote("静态扫描是工程级的：" + (s.codeIssues.Count - inScope)
                               + " 处问题落在 " + sceneScope + " 以外的脚本（同工程里的其它副本/公共目录）。"
-                              + "对比前后两份报告时，请只看「代码问题数（当前场景目录）」以及带 ★ 的行；"
+                              + "对比前后两份报告时，请只看「每帧类代码问题（当前场景目录）」以及带 ★ 的行；"
                               + "两张表里相同的那些行往往是同一批“不属于本次采集场景”的代码。");
                 }
             }

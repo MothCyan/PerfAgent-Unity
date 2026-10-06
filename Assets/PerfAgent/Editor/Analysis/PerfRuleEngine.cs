@@ -694,15 +694,29 @@ namespace PerfAgent.Analysis
                 }
 
                 bool onlyOtherCopies = anyScoped && inScope == 0;
-                string title = string.Format(CultureInfo.InvariantCulture, "每帧方法中出现 {0}（{1} 处）",
-                    first.pattern, g.Value.Count);
+                bool perFrame = CodeIssue.IsPerFrameMethod(first.pattern);
+                string timing = CodeIssue.ExecutionTiming(first.pattern);
+                string title = perFrame
+                    ? string.Format(CultureInfo.InvariantCulture, "每帧方法中出现 {0}（{1} 处）", first.pattern, g.Value.Count)
+                    : string.Format(CultureInfo.InvariantCulture, "事件回调中出现 {0}（{1} 处，只在碰撞/触发时执行）",
+                                   first.pattern, g.Value.Count);
+                if (onlyOtherCopies) title += "，但都不属于本次采集的场景目录";
+
+                // 事件回调里的写法不是稳态开销（例如碰撞时 Instantiate + Destroy 是正常游戏逻辑），
+                // 所以级别封顶到警告：别让「每帧分配」这种口径把正常代码说成严重问题。
+                string sev = Severity.Rank(first.severity) >= 3 ? Severity.Error : first.severity;
+                if (!perFrame && Severity.Rank(sev) > Severity.Rank(Severity.Warn)) sev = Severity.Warn;
+
                 var f = New("code_" + Sanitize(first.pattern), "代码",
-                    onlyOtherCopies ? Severity.Info : (Severity.Rank(first.severity) >= 3 ? Severity.Error : first.severity),
-                    onlyOtherCopies ? title + "，但都不属于本次采集的场景目录" : title,
+                    onlyOtherCopies ? Severity.Info : sev,
+                    title,
                     onlyOtherCopies
                         ? "这些位置全在同工程里的**其它目录**（另一份副本 / 公共目录），本次采集的场景跑不到它们 —— "
                           + "对比前后时请忽略这一条，它不是你这次要看的那份代码。"
-                        : "这些写法在 Update/回调中每帧执行，是每帧分配与隐性开销的主要来源。",
+                        : (perFrame
+                            ? "这些写法在 Update/回调中每帧执行，是每帧分配与隐性开销的主要来源。"
+                            : "这些写法只碰撞/触发时执行，**不是每帧分配** —— 没有 Update 里的同类写法严重；"
+                              + "但碰撞密集时仍会集中产生分配，高频对象上值得收收。"),
                     first.suggestion,
                     onlyOtherCopies ? 0.6f : Math.Min(0.9f, 0.5f + g.Value.Count * 0.05f));
                 f.fixCode = CodeIssue.BasePattern(first.pattern);
@@ -736,6 +750,9 @@ namespace PerfAgent.Analysis
                 }
 
                 Ev(f, "scan_scripts", "出现次数", g.Value.Count.ToString(CultureInfo.InvariantCulture), "处", "0 处", "Assets/**/*.cs");
+                Ev(f, "scan_scripts", "执行时机", timing, "", "",
+                   perFrame ? "每帧都会执行（Update/FixedUpdate/LateUpdate/OnGUI 等）"
+                            : "只在碰撞/触发事件发生时执行（事件回调，不是每帧）");
                 if (anyScoped && inScope != g.Value.Count)
                 {
                     Ev(f, "scan_scripts", "分组（当前场景目录 / 其它目录）",

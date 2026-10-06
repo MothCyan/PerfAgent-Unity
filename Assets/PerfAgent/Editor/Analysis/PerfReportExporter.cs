@@ -346,16 +346,18 @@ namespace PerfAgent.Analysis
             if (anyScoped && anyOther)
             {
                 sb.Append("> ★ = 属于**本次采集场景**所在目录的脚本 —— 前后对比只看这些行，以及指标表里的"
-                          + "「代码问题数（当前场景目录）」。其余行来自同工程里的其它目录（另一份副本），本次采集用不到。\n\n");
-            }
-            sb.Append("| 级别 | 位置 | 模式 | 代码 | 建议 |\n|---|---|---|---|---|\n");
+                          + "「每帧类代码问题（当前场景目录）」。其余行来自同工程里的其它目录（另一份副本），本次采集用不到。\n\n");
+            }            sb.Append("> 「时机」列：**每帧** = Update/FixedUpdate/LateUpdate/OnGUI 等每帧方法体内（稳态分配）；"
+                      + "**事件** = 碰撞/触发回调里（只在事件发生时执行，里面的 Instantiate + Destroy 是正常游戏逻辑）。\n\n");            sb.Append("| 级别 | 位置 | 时机 | 模式 | 代码 | 建议 |\n|---|---|---|---|---|---|\n");
             for (int i = 0; i < s.codeIssues.Count && i < 40; i++)
             {
                 var c = s.codeIssues[i];
                 sb.Append("| ").Append(SeverityLabel(c.severity)).Append(" | ")
                   .Append(c.inSceneScope && anyOther ? "★ " : string.Empty)
                   .Append('`').Append(c.file).Append(':').Append(c.line).Append("` | ")
-                  .Append(c.pattern).Append(" | `").Append(EscapePipe(EscapeTick(c.snippet))).Append("` | ")
+                  .Append(CodeIssue.IsPerFrameMethod(c.pattern) ? "每帧" : "事件")
+                  .Append(" | ").Append(c.pattern).Append(" | `")
+                  .Append(EscapePipe(EscapeTick(c.snippet))).Append("` | ")
                   .Append(EscapePipe(c.suggestion)).Append(" |\n");
             }
             sb.Append('\n');

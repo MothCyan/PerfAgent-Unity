@@ -30,6 +30,7 @@ namespace PerfAgent.RuleRegression
                 TinyCaptureWindowSuppressesSampleDependentVerdicts,
                 ZeroFrameCaptureIsReportedAsError,
                 CodeFindingsAreSplitBySceneDirectory,
+                EventCallbackFindingsAreNotCalledPerFrame,
                 AllocGatesAreRecordedForEveryOutcome,
                 CodeScanExplanationSelfProvesZero,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
@@ -290,6 +291,52 @@ namespace PerfAgent.RuleRegression
             var sb = new System.Text.StringBuilder("证据里找不到 " + metric + "=" + value + "；实有：");
             for (int i = 0; i < f.evidence.Count; i++) sb.Append(f.evidence[i].ToString()).Append("; ");
             throw new InvalidOperationException(sb.ToString());
+        }
+
+        /// <summary>
+        /// 「每帧方法」与「事件回调」必须分开说。
+        /// 实测：优化后的样例副本被判「当前副本 6 处」，标题还写着
+        /// 「每帧方法中出现 OnCollisionEnter2D + instantiate_destroy」—— 那是碰撞事件，不是每帧分配；
+        /// 既让结论不实，也把前后对比比糊了（真正的每帧翻转是 41 -> 1 处）。
+        /// </summary>
+        static void EventCallbackFindingsAreNotCalledPerFrame()
+        {
+            True(CodeIssue.IsPerFrameMethod("Update + getcomponent"), "Update 是每帧方法");
+            True(CodeIssue.IsPerFrameMethod("OnGUI + gc_string_concat"), "OnGUI 是每帧方法");
+            True(!CodeIssue.IsPerFrameMethod("OnCollisionEnter2D + instantiate_destroy"), "碰撞回调不是每帧方法");
+            True(!CodeIssue.IsPerFrameMethod("OnTriggerEnter2D + instantiate_destroy"), "触发回调不是每帧方法");
+            Equal("事件回调（碰撞/触发时）", CodeIssue.ExecutionTiming("OnCollisionEnter2D + getcomponent"),
+                "执行时机的说法要统一");
+
+            var snapshot = CleanSnapshot();
+            snapshot.codeScopeRoot = "Assets/Game/";
+            snapshot.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/Game/Brick.cs", line = 16, pattern = "OnCollisionEnter2D + linq",
+                severity = Severity.Error, snippet = "OnCollisionEnter2D: bodies.Where(x => x != null)",
+                suggestion = "去掉 LINQ", inSceneScope = true
+            });
+            snapshot.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/Game/Pig.cs", line = 37, pattern = "Update + linq",
+                severity = Severity.Error, snippet = "Update: bodies.Where(x => x != null)",
+                suggestion = "去掉 LINQ", inSceneScope = true
+            });
+
+            var eventFinding = Single(snapshot, f => f.id == "code_OnCollisionEnter2D___linq");
+            True(eventFinding.title.IndexOf("事件回调中出现", StringComparison.Ordinal) >= 0,
+                "事件回调的标题不能写成「每帧方法中出现」：" + eventFinding.title);
+            True(eventFinding.title.IndexOf("每帧方法中出现", StringComparison.Ordinal) < 0,
+                "标题里不能同时出现「每帧方法」：" + eventFinding.title);
+            Equal(Severity.Warn, eventFinding.severity, "事件回调里的写法级别封顶到警告（Error -> Warn）");
+            True(eventFinding.detail.IndexOf("不是每帧", StringComparison.Ordinal) >= 0,
+                "说明里要写明不是每帧：" + eventFinding.detail);
+            EvidenceContains(eventFinding, "执行时机", "事件回调（碰撞/触发时）");
+
+            var frameFinding = Single(snapshot, f => f.id == "code_Update___linq");
+            Equal(Severity.Error, frameFinding.severity, "每帧方法里的 Error 级反模式保持 Error");
+            True(frameFinding.title.IndexOf("每帧方法中出现", StringComparison.Ordinal) >= 0, frameFinding.title);
+            EvidenceContains(frameFinding, "执行时机", "每帧");
         }
 
         /// <summary>

@@ -35,6 +35,12 @@ public class AfterSlingShot : MonoBehaviour
     // 优化：相机只查一次；轨迹点数组只分配一次（原写法拖拽期间每帧 new Vector2[15]）
     private const int TrajectorySegmentCount = 15;
     private Camera cachedCamera;
+
+    // 优化：原来 Update 里每帧 GetComponent<CircleCollider2D>()。
+    // 不能只在 Start 里缓存一次 —— BirdToThrow 每回合都会被 GameManager 换掉
+    //（AfterGameManager 里 slingshot.BirdToThrow = Birds[currentBirdIndex]），
+    // 所以要比对“上次缓存的那只鸟”，换了（或已被销毁）才重新取。
+    private CircleCollider2D cachedBirdCollider;
     private readonly Vector2[] trajectorySegments = new Vector2[TrajectorySegmentCount];
 
     [HideInInspector]
@@ -77,7 +83,7 @@ public class AfterSlingShot : MonoBehaviour
                     //get the point on screen user has tapped
                     Vector3 location = cachedCamera.ScreenToWorldPoint(Input.mousePosition);
                     //if user has tapped onto the bird
-                    if (BirdToThrow.GetComponent<CircleCollider2D>() == Physics2D.OverlapPoint(location))
+                    if (BirdCollider() == Physics2D.OverlapPoint(location))
                     {
                         slingshotState = AfterSlingshotState.UserPulling;
                     }
@@ -158,6 +164,22 @@ public class AfterSlingShot : MonoBehaviour
     }
 
     public event EventHandler BirdThrown;
+
+    /// <summary>
+    /// 鸟的碰撞体：每回合换鸟后才重新取一次。
+    ///
+    /// 原来写的是 Update 里每帧 `BirdToThrow.GetComponent<CircleCollider2D>()` ——
+    /// 每帧一次 GetComponent 是纯粹的稳态开销（也是脚本反模式扫描会报的那一处）。
+    /// 缓存后要注意两件事：
+    ///   1. BirdToThrow 每回合会被 GameManager 换掉 —— 所以比对的是“上次缓存的那只鸟”；
+    ///   2. 鸟被销毁后 Unity 的 == 会返回 true（伪 null），下面这个判空能自愈。
+    /// </summary>
+    private CircleCollider2D BirdCollider()
+    {
+        if (cachedBirdCollider == null || cachedBirdCollider.gameObject != BirdToThrow)
+            cachedBirdCollider = BirdToThrow.GetComponent<CircleCollider2D>();
+        return cachedBirdCollider;
+    }
 
     private void InitializeBird()
     {
