@@ -74,9 +74,11 @@ namespace PerfAgent.RuleRegression
             True(answer.IndexOf("gc_alloc") < 0, "answer must not dump internal ids");
             True(answer.IndexOf("13970") >= 0, "answer must quote the attributable number");
             True(answer.IndexOf("Draw Calls 超预算") < 0, "unmatched dimension findings must not be listed");
-            True(answer.IndexOf("不联网", StringComparison.Ordinal) >= 0, "answer must state it does not use the network");
-            True(answer.IndexOf("不理解句子意思", StringComparison.Ordinal) >= 0,
-                "answer must be honest about the keyword-only routing");
+            // 边界说明（不联网 / 不理解句子 / 跨维度推理）已经从每条回答里移到对话卡的 tooltip ——
+            // 每条回答都重复三行那是噪声（用户反馈过），所以这里反过来钉「回答里不再有它」。
+            True(answer.IndexOf("本地引擎的边界", StringComparison.Ordinal) < 0,
+                "the boundary block must not be repeated in every answer");
+            True(answer.Length < 1600, "local answer must stay short enough to read: " + answer.Length + " chars");
         }
 
         /// <summary>问「有没有卡顿」命中帧率维度但没有结论时，仍要给出帧率数字，不能只回一句「没有」。</summary>

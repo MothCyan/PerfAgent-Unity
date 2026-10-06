@@ -551,6 +551,7 @@ namespace PerfAgent.UI
             // 主操作单独一组：整屏只有一个强调色按钮
             bar.Add(Theme.Primary("跟随采集", ToggleFollowCapture));
             bar.Add(Theme.Secondary("复制结论", CopyReport));
+            bar.Add(Theme.Secondary("复制修复建议", CopyFixSuggestions));
             bar.Add(Theme.Divider(true));
             bar.Add(Theme.Secondary("静态审计", RunStaticAudit));
             bar.Add(Theme.Secondary("重新分析", delegate
@@ -668,12 +669,32 @@ namespace PerfAgent.UI
 
         VisualElement BuildChatPanel()
         {
-            var card = Theme.Card("对话追问", "看不懂结论就在这里问；纯本地模式按关键词找维度（不联网）");
+            var card = Theme.Card("对话追问", "本地先给结论；开 AI 再多一段解释");
+            card.tooltip = "本地规则引擎只按关键词找维度（帧率 / 渲染 / 内存 / 资源 / 代码 / 物理 / 场景 / 采集），"
+                         + "不理解句子意思、也不联网；开 AI 后，它会在本地结论之上补上因果、取舍与具体改法。";
             card.style.marginTop = 6;
-            card.style.flexShrink = 0;   // 窗口矮的时候也不要压缩输入区
+            // 与明细区一起瓜分右栏高度：窗口高的时候记录区跟着变高，
+            // 而不是永远卡在一个 150 px 的小窗里（那样长回答根本没法读）。
+            card.style.flexGrow = 1;
+            card.style.minHeight = 180;
+
+            // 标题行右侧放按钮：长在标题里就不占额外的高度
+            var titleRow = Theme.CardTitleRow(card);
+            if (titleRow != null)
+            {
+                var grow = new VisualElement();
+                grow.style.flexGrow = 1;
+                titleRow.Add(grow);
+
+                var copyChat = Theme.Ghost("复制对话", CopyConversation);
+                copyChat.tooltip = "把整个对话（含本地结论与 AI 回答）复制成 Markdown";
+                titleRow.Add(copyChat);
+                titleRow.Add(Theme.Ghost("新会话", NewConversation));
+            }
 
             _transcriptScroll = new ScrollView(ScrollViewMode.Vertical);
-            _transcriptScroll.style.height = 150;
+            _transcriptScroll.style.flexGrow = 1;
+            _transcriptScroll.style.minHeight = 100;
             _transcriptScroll.style.backgroundColor = Theme.SunkenBg;
             Theme.Rounded(_transcriptScroll, 4f);
             Theme.Border1(_transcriptScroll, Theme.Border);
@@ -686,30 +707,29 @@ namespace PerfAgent.UI
             _transcript.style.color = Theme.Text;
             _transcriptScroll.Add(_transcript);
 
-            // 示例问题：点一下填进输入框（不直接发送）。
+            // 示例问题：单行横向滚动。
             //
-            // 「需 AI」的标注是有用的东西：它让用户**在提问前**就看出两条路的分工 ——
-            // 本地引擎只比预算、不理解句子，所以「为什么 / 先修哪个」这类问题它只能给事实。
-            // 以前这个边界藏在回答末尾，用户问完才发现，就会觉得「用不用 AI 看不出区别」。
-            var samples = new VisualElement();
-            samples.style.flexDirection = FlexDirection.Row;
-            samples.style.flexWrap = Wrap.Wrap;
-            samples.style.alignItems = Align.Center;
+            // 以前是换行排的，四条样例吃掉三行高度 —— 在一个本来就紧的底部区域里，
+            // 那三行比示例本身值钱。改单行 + 收起滚动条。
+            //
+            // 「需 AI」的标注仍然有用：让用户**在提问前**就看出两条路的分工。
+            var samples = new ScrollView(ScrollViewMode.Horizontal);
+            samples.style.height = 26;
             samples.style.marginTop = 4;
-            var samplesLabel = new Label("试着问：");
-            samplesLabel.style.fontSize = Theme.SizeSmall;
-            samplesLabel.style.color = Theme.TextFaint;
-            samplesLabel.style.marginRight = 4;
-            samples.Add(samplesLabel);
-            SampleChip(samples, "帧耗时超预算了吗？", false);
-            SampleChip(samples, "每帧分配从哪来？", false);
-            SampleChip(samples, "为什么只有战斗时才卡？", true);
-            SampleChip(samples, "我该先修哪一个？", true);
+            samples.style.flexShrink = 0;
+            samples.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+            var samplesLine = samples.contentContainer;
+            samplesLine.style.flexDirection = FlexDirection.Row;
+            samplesLine.style.alignItems = Align.Center;
+            SampleChip(samplesLine, "帧耗时超预算了吗？", false);
+            SampleChip(samplesLine, "每帧分配从哪来？", false);
+            SampleChip(samplesLine, "为什么只有战斗时才卡？", true);
+            SampleChip(samplesLine, "我该先修哪一个？", true);
             card.Add(samples);
 
             var row = new VisualElement();
             row.style.flexDirection = FlexDirection.Row;
-            row.style.marginTop = 6;
+            row.style.marginTop = 5;
             row.style.flexShrink = 0;
             // 空间不够时宁可让按钮换到下一行，也不能把它挤出可视区
             //（实测：输入框 flexGrow 把按钮顶到了卡片外，看起来就像「没有发送按钮」）
@@ -721,7 +741,7 @@ namespace PerfAgent.UI
             _input.style.flexGrow = 1;
             _input.style.flexShrink = 1;
             _input.style.minWidth = 120;     // 可收缩，但至少留得下几个字
-            _input.style.height = 52;
+            _input.style.height = 46;
             _input.style.fontSize = Theme.SizeBody;
             _input.RegisterCallback<KeyDownEvent>(delegate (KeyDownEvent evt)
             {
@@ -734,12 +754,12 @@ namespace PerfAgent.UI
             row.Add(_input);
 
             _sendButton = Theme.Primary("发送", Send);
-            _sendButton.style.width = 96;
+            _sendButton.style.width = 92;
             // flexShrink 默认是 1：不给 minWidth 的话这个按钮会被攼到看不见
-            _sendButton.style.minWidth = 96;
+            _sendButton.style.minWidth = 92;
             _sendButton.style.flexShrink = 0;
             _sendButton.style.flexGrow = 0;
-            _sendButton.style.height = 52;
+            _sendButton.style.height = 46;
             _sendButton.style.marginLeft = 6;
             _sendButton.style.marginRight = 0;
             _sendButton.style.marginBottom = 0;
@@ -747,7 +767,12 @@ namespace PerfAgent.UI
             _sendButton.tooltip = "发送（Ctrl+Enter）";
             row.Add(_sendButton);
 
-            card.Add(Theme.Hint("Ctrl+Enter 发送。没配 LLM Key 也照样能用 —— 会走本地规则引擎回答。"));
+            var foot = new Label("Ctrl+Enter 发送。没配 LLM Key 也能用 —— 走本地规则引擎。");
+            foot.style.fontSize = Theme.SizeSmall;
+            foot.style.color = Theme.TextFaint;
+            foot.style.marginTop = 3;
+            foot.style.whiteSpace = WhiteSpace.Normal;
+            card.Add(foot);
 
             return card;
         }
@@ -803,6 +828,79 @@ namespace PerfAgent.UI
             string md = PerfReportExporter.ToMarkdown(snap);
             EditorGUIUtility.systemCopyBuffer = md;
             SetStatus("已复制 Markdown 报告（" + md.Length + " 字符）：环境 / 指标 / 结论 / 修复计划都在里面。");
+        }
+
+        /// <summary>把整个对话（用户问题 + 本地结论 + AI 回答）复制成 Markdown。</summary>
+        void CopyConversation()
+        {
+            string text = _transcriptRaw == null ? "" : _transcriptRaw.ToString();
+            if (string.IsNullOrEmpty(text)) { SetStatus("对话还是空的。"); return; }
+            EditorGUIUtility.systemCopyBuffer = text;
+            SetStatus("已复制对话（" + text.Length + " 字符）。");
+        }
+
+        /// <summary>
+        /// 「哪些代码需要修、怎么修」—— 本地版直接复制规则扫描的清单；开了 AI 则让 AI 在清单之上给出具体改法。
+        ///
+        /// 为什么不是一个按钮一种输出：这两份东西的性质不同 ——
+        /// 本地清单是**扫描出来的事实**（文件:行 + 规则建议、可核对），
+        /// AI 版是**建议**（含可替换的代码，可能出错、必须人看）。
+        /// 所以状态栏会明确说这次给的是哪一种，AI 版还会记一条操作日志。
+        /// </summary>
+        void CopyFixSuggestions()
+        {
+            var snap = PerfSession.Current;
+            if (snap == null) { SetStatus("没有快照：先跑一次采集或载入历史快照。"); return; }
+
+            var cfg = PerfAgentSettings.Config;
+            if (cfg.localOnlyNoLlm || !cfg.HasApiKey)
+            {
+                string local = FixSuggestionBrief.LocalChecklist(snap);
+                EditorGUIUtility.systemCopyBuffer = local;
+                SetStatus(snap.codeIssues.Count == 0
+                    ? "已复制本地清单（扫描没发现代码反模式，附上了相关结论）。"
+                    : ("已复制本地修复清单（" + snap.codeIssues.Count + " 处，来自规则扫描，不含具体改法）。"
+                       + (cfg.localOnlyNoLlm ? " 开 AI 后能给到「改成什么代码」。" : " 配好 Key 后能给到「改成什么代码」。")));
+                return;
+            }
+
+            // 隐私开关要如实生效：关着「允许上传代码片段」时，只发文件:行与模式名，不发源码
+            bool withCode = cfg.allowSourceCodeUpload;
+            string brief = FixSuggestionBrief.Build(snap, withCode);
+
+            AppendTranscript("\n**我**：请给出修复清单（" + snap.codeIssues.Count + " 处代码问题"
+                           + (withCode ? "，含代码片段" : "，未上传代码片段") + "）\n\n");
+
+            PerfHistory.RecordOperation("human", "ai", "fix_suggestions", "让 AI 生成修复清单",
+                "", "", true, snap.codeIssues.Count,
+                withCode ? "已发送代码片段" : "未发送代码片段（隐私开关关闭）", false);
+
+            if (_sendButton != null) SetSending(true);
+            SetStatus("正在让 AI 生成修复清单" + (withCode ? "…" : "（未上传代码片段，只发了文件:行）…"));
+
+            int streamed = 0;
+            Agent.Ask(FixSuggestionBrief.Prompt,
+                delegate (string delta)
+                {
+                    streamed += delta.Length;
+                    SetStatus("生成中… " + streamed + " 字");
+                },
+                delegate (string text)
+                {
+                    if (_sendButton != null) SetSending(false);
+                    if (string.IsNullOrEmpty(text)) { SetStatus("AI 没返回内容（看看 Console 或 LLM 配置）。"); return; }
+                    EditorGUIUtility.systemCopyBuffer = text;
+                    AppendTranscript("\n**AI 修复清单**（已复制到剪贴板）\n\n" + text + "\n");
+                    SetStatus("已复制 AI 修复清单（" + text.Length + " 字符）。先看一遍再改 —— 这是建议，不是审计结果。");
+                    SaveConversation();
+                },
+                delegate (string error)
+                {
+                    if (_sendButton != null) SetSending(false);
+                    AppendTranscript("\n⚠ " + error + "\n");
+                    SetStatus("AI 生成失败：" + error);
+                },
+                brief);
         }
 
         void Send()
@@ -1721,6 +1819,19 @@ namespace PerfAgent.UI
 
         void RenderCode(PerfSnapshot snap)
         {
+            var head = new VisualElement();
+            head.style.flexDirection = FlexDirection.Row;
+            head.style.flexWrap = Wrap.Wrap;
+            head.style.alignItems = Align.Center;
+            head.style.marginBottom = 6;
+            head.Add(Theme.Secondary("复制修复建议", CopyFixSuggestions));
+            var tip = new Label("本地给清单（文件:行 + 规则建议）；开了 AI 会给到「改成什么代码」。");
+            tip.style.fontSize = Theme.SizeSmall;
+            tip.style.color = Theme.TextFaint;
+            tip.style.whiteSpace = WhiteSpace.Normal;
+            head.Add(tip);
+            _detailHost.Add(head);
+
             if (snap.codeIssues.Count == 0)
             {
                 _detailHost.Add(Theme.EmptyState("✓", "未发现脚本反模式",

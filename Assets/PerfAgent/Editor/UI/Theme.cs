@@ -142,6 +142,7 @@ namespace PerfAgent.UI
             if (!string.IsNullOrEmpty(title))
             {
                 var row = new VisualElement();
+                row.name = CardTitleName;   // 方便调用方往标题行右侧加按钮（见 CardTitleRow）
                 row.style.flexDirection = FlexDirection.Row;
                 row.style.alignItems = Align.Center;
                 row.style.marginBottom = 5;
@@ -165,6 +166,18 @@ namespace PerfAgent.UI
                 card.Add(row);
             }
             return card;
+        }
+
+        /// <summary>卡片标题行的内部名（给 <see cref="CardTitleRow"/> 用）。</summary>
+        public const string CardTitleName = "pa-card-title";
+
+        /// <summary>
+        /// 取卡片的标题行，用于在标题右侧追加按钮（如「复制对话」「新会话」）。
+        /// 这样按钮就长在标题行里，不用另起一行 —— 面板高度本来就紧。
+        /// </summary>
+        public static VisualElement CardTitleRow(VisualElement card)
+        {
+            return card == null ? null : card.Q(CardTitleName);
         }
 
         /// <summary>页面级标题 + 副标题。</summary>

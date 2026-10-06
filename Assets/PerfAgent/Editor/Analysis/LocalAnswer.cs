@@ -164,7 +164,10 @@ namespace PerfAgent.Analysis
             sb.Append("**本地规则引擎** · ");
             if (hits.Count == 0)
             {
-                sb.Append("没有匹配到具体维度，下面给出全部结论\n");
+                // 没命中时说清「为什么列了全部」，并给出能提高命中率的词 ——
+                // 不然用户会以为本地引擎只会倒垃圾
+                sb.Append("没有匹配到具体维度，下面给出全部结论（换几个关键词会更聚焦：")
+                  .Append("帧率 / 渲染 / 内存 / 资源 / 代码 / 物理 / 场景 / 采集）\n");
             }
             else
             {
@@ -193,20 +196,17 @@ namespace PerfAgent.Analysis
                   .Append("　 跟随采集会一直录到你退出 Play，多操作几秒再问一次，结论才有意义。\n\n");
             }
 
-            // 解释类问题要在**开头**就说清楚：本地只能给事实。
-            // 藏在末尾的话，用户看到的就是一段「看着很像答案」的结论列表 ——
-            // 那才会让人觉得「用不用 AI 没区别」。
+            // 解释类问题要在开头说一句：本地只能给事实。
+            // 只说一句 —— 三行的「边界说明」每条回答都重复一遍就成噪声了（用户反馈过），
+            // 那段话现在放在对话卡的 tooltip 里，只讲一次。
             if (IsExplanationQuestion(question))
             {
-                sb.Append(hits.Count > 0
-                    ? "⚠ 这是**解释类**问题（为什么 / 怎么改 / 先修哪个）：本地引擎只能给事实与证据，给不出因果、取舍与优先级。\n"
-                    : "⚠ 这是**解释类**问题，而本地引擎不理解句子（只按关键词找维度）：它给不出因果、取舍与优先级。\n");
-                sb.Append("　 下面先把它能找到的事实摆出来；要解释就把 AI 打开 —— 开启后同一条问题会同时给出本地结论与 AI 解释。\n\n");
+                sb.Append("⚠ 解释类问题（为什么 / 怎么改 / 先修哪个）：本地只能给事实与证据，给不出因果与取舍");
+                sb.Append(hits.Count > 0 ? "；下面先把它找到的事实摆出来。\n\n" : "，而这个问题也没命中关键词。\n\n");
             }
 
             bool any = AppendFindings(sb, s, hits);
             AppendMetrics(sb, s, hits, any);
-            AppendLimits(sb, hits);
             return sb.ToString();
         }
 
@@ -299,18 +299,6 @@ namespace PerfAgent.Analysis
             sb.Append("| 指标 | 值 | 预算 |\n|---|---:|---:|\n");
             sb.Append(rows);
             sb.Append('\n');
-        }
-
-        /// <summary>把本地引擎做不到的事写清楚 —— 这是它跟联网 LLM 的分界线。</summary>
-        static void AppendLimits(StringBuilder sb, List<Dimension> hits)
-        {
-            sb.Append("### 本地引擎的边界（实话）\n\n");
-            sb.Append("- 它**不联网、不调用任何模型**，回答内容全部来自当前快照的规则结论，可以逐条回溯到证据。\n");
-            sb.Append("- 它只按关键词找维度（帧率 / 渲染 / 内存 / 资源 / 代码 / 物理 / 场景 / 采集），");
-            sb.Append("**不理解句子意思**，也不做跨维度推理（比如「为什么只有在战斗时才卡」）。\n");
-            if (hits.Count == 0)
-                sb.Append("- 这次没匹配到维度，所以把全部结论都列了出来；换几个关键词再问会更聚焦。\n");
-            sb.Append("- 需要解释、对比、写给人看的结论时，用「启用 AI」走 LLM（会联网，且由你决定发什么）。\n");
         }
 
         /// <summary>
