@@ -113,7 +113,8 @@ namespace PerfAgent.UI
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
             window.minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-            window.EnsureUsableWindowSize();
+            // 用户明确要求「每次打开固定高度」：打开就走一遍固定尺寸（必要时换成浮动窗口）。
+            window.ApplyFixedWindowSize(true);
             window.Show();
         }
 
@@ -211,7 +212,9 @@ namespace PerfAgent.UI
             // 管不住「从布局里恢复成小窗口」与「细条来回后 minSize 被域重载清掉」这两种情况
             //（实测用户截图：整个面板只剩一条监视行，字还被截到「口径」）。
             minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-            EnsureUsableWindowSize();
+            // 每次 Unity 会话允许自动升级一次（把停靠窗口换成浮动窗口）——
+            // 不限制的话，每次进/出 Play 的域重载都会去动用户的布局。
+            ApplyFixedWindowSize(true);
 
             PerfSession.Changed += OnSessionChanged;
             PerfAgentSettingsWindow.Changed += RefreshLlmStatus;
@@ -283,6 +286,87 @@ namespace PerfAgent.UI
             return r.width.ToString("0") + "x" + r.height.ToString("0");
         }
 
+        static bool SizeOk(Rect r)
+        {
+            return Mathf.Abs(r.width - StripGeometry.PanelWidth) < 2f
+                && Mathf.Abs(r.height - StripGeometry.PanelHeight) < 2f;
+        }
+
+        static Vector2 FixedPanelSize
+        {
+            get { return new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight); }
+        }
+
+        /// <summary>「本次 Unity 会话已经为面板换过一次浮动窗口」的标记（避免每次域重载都动布局）。</summary>
+        const string EscalatedKey = "PerfAgent.UI.EscalatedToFloating";
+
+        /// <summary>
+        /// 把面板设成**固定尺寸**（用户要求：每次打开固定高度）；写不动就升级成浮动窗口再写。
+        ///
+        /// 为什么必须升级成「换浮动」（实测第 3 轮反馈「还是不行，要让它每次打开固定高度」）：
+        /// 窗口处于**停靠**状态时，尺寸完全由 dock 布局决定 —— `minSize` 与 `position` 都会被忽略，
+        /// 代码没有任何办法改它的高度。不换成浮动窗口，它就永远是那条横线。
+        /// 升级一定写 Console + 状态栏，不做静默改布局；且**每次 Unity 会话只升级一次**，
+        /// 免得每次进/出 Play 的域重载都去动用户的布局。
+        /// </summary>
+        void ApplyFixedWindowSize(bool escalate)
+        {
+            if (_stripped) return;
+            try
+            {
+                var want = FixedPanelSize;
+                var before = position;
+                position = new Rect(before.x, before.y, want.x, want.y);
+                var after = position;
+
+                if (SizeOk(after))
+                {
+                    SetStatus("面板尺寸固定为 " + want.x.ToString("0") + "x" + want.y.ToString("0") + "。");
+                    return;
+                }
+
+                bool canEscalate = escalate && !SessionState.GetBool(EscalatedKey, false);
+                if (!canEscalate)
+                {
+                    if (!_warnedWindowGrown)
+                    {
+                        _warnedWindowGrown = true;
+                        Debug.Log("[PerfAgent] 面板尺寸写不动（请求 " + want.x.ToString("0") + "x" + want.y.ToString("0")
+                            + "，实际读回 " + Fmt(after) + "）：这是**停靠**窗口，尺寸由 dock 布局决定，"
+                            + "minSize 与 position 都会被 Unity 忽略。用菜单 Tools/PerfAgent/窗口：恢复可用尺寸 "
+                            + "可以把它一键换成浮动窗口。");
+                    }
+                    return;
+                }
+
+                SessionState.SetBool(EscalatedKey, true);
+                Debug.Log("[PerfAgent] 面板尺寸写不动（请求 " + want.x.ToString("0") + "x" + want.y.ToString("0")
+                    + "，实际读回 " + Fmt(after) + "）：停靠窗口的尺寸由 dock 布局决定，代码改不了 —— "
+                    + "已把它换成浮动窗口，让「每次打开固定高度」真正生效。");
+                try { ShowUtility(); } catch { }
+                position = new Rect(before.x, before.y, want.x, want.y);
+
+                // 换浮动后窗口要重排，可能到下一帧才接受尺寸 —— 下一帧复核一次再下结论。
+                EditorApplication.delayCall += delegate
+                {
+                    try
+                    {
+                        var p = position;
+                        if (!SizeOk(p)) position = new Rect(p.x, p.y, want.x, want.y);
+                        var a2 = position;
+                        string msg = SizeOk(a2)
+                            ? ("面板已固定为 " + want.x.ToString("0") + "x" + want.y.ToString("0") + "（浮动窗口）。")
+                            : ("面板尺寸仍然改不动（读回 " + Fmt(a2) + "）：请手动把「性能诊断」标签拖出停靠区，"
+                               + "或拖动分隔条 —— 在停靠区域里，任何代码都改不了窗口高度。");
+                        SetStatus(msg);
+                        Debug.Log("[PerfAgent] " + msg);
+                    }
+                    catch { }
+                };
+            }
+            catch { }
+        }
+
         /// <summary>
         /// 菜单：强制把面板设成可用尺寸，并把**真实结果**说出来。
         ///
@@ -299,20 +383,10 @@ namespace PerfAgent.UI
 
             if (window._stripped) window.SetStripped(false, true);
 
-            var before = window.position;
-            window.position = new Rect(before.x, before.y, StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-            var after = window.position;
-            bool ok = Mathf.Abs(after.width - StripGeometry.PanelWidth) < 2f
-                      && Mathf.Abs(after.height - StripGeometry.PanelHeight) < 2f;
-
-            string msg = ok
-                ? ("已将面板设为 " + StripGeometry.PanelWidth + "x" + StripGeometry.PanelHeight
-                   + "（原 " + Fmt(before) + "）。")
-                : ("程序改不动这个窗口的尺寸：请求 " + StripGeometry.PanelWidth + "x" + StripGeometry.PanelHeight
-                   + "，实际读回 " + Fmt(after) + "。它应该是**停靠 / 最大化**状态 —— "
-                   + "请把窗口标签拖出来变成浮动窗口（或拖动分隔条给它更多高度），再点一次这个菜单确认。");
-            window.SetStatus(msg);
-            Debug.Log("[PerfAgent] " + msg);
+            // 菜单是「人来明确要求」的入口：允许它把停靠窗口换成浮动窗口
+            //（否则停靠状态下这个菜单什么也做不了，用户只会觉得「点了没用」）。
+            SessionState.SetBool(EscalatedKey, false);
+            window.ApplyFixedWindowSize(true);
         }
 
         void OnDisable()
