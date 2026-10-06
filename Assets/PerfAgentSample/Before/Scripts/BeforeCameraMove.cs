@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using UnityEngine.Serialization;
 using System.Collections;
 using Assets.Scripts;
 
@@ -46,5 +47,8 @@ public class BeforeCameraMove : MonoBehaviour
     private float timeDragStarted;
     private Vector3 previousPosition = Vector3.zero;
 
+    // 序列化字段名从上游的 SlingShot 改成了 BeforeSlingShot。
+    // 场景里存的是**字段名**，改名不会跟着改场景 —— 没有这行保险时，字段在运行时就是 null。
+    [FormerlySerializedAs("SlingShot")]
     public BeforeSlingShot BeforeSlingShot;
 }
