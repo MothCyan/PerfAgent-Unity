@@ -221,11 +221,15 @@ namespace PerfAgent.UI
         }
 
         /// <summary>
-        /// 把面板撑回可用尺寸（不碰细条状态，也不碰停靠窗口 —— 停靠时写 position 不生效，Unity 自己忽略）。
+        /// 把面板撑回可用尺寸，并**回读确认**（不碰细条状态）。
         ///
         /// 为什么需要「主动撑」而不是只设 minSize：minSize 只约束手动拖拽。窗口尺寸是持久化的，
         /// 一旦被存成小尺寸（或细条收/展切换时 minSize 被域重载清掉），它就会一直小下去，
         /// 而内容只会被裁掉 —— 用户看到的就是「面板只剩一条监视行」。
+        ///
+        /// 为什么要回读：实测「还是横着一条」—— 窗口是**停靠**或**最大化**状态时，
+        /// Unity 根本不接受程序写进来的 position（尺寸由布局管）。不回读就会一直谎报「已撑开」，
+        /// 用户那边却纹丝不动，排查方向全错。所以这里把真实结果写出来（含「该怎么办」）。
         /// </summary>
         void EnsureUsableWindowSize()
         {
@@ -239,13 +243,21 @@ namespace PerfAgent.UI
                 float h = StripGeometry.Grow(p.height, StripGeometry.PanelHeight);
                 position = new Rect(p.x, p.y, w, h);
 
-                // 只报一次：日志本身也是开销，而且这件事不需要反复提醒。
+                // 回读：拿不到请求的尺寸 = 这个窗口不归程序管（停靠 / 最大化）
+                var after = position;
+                bool ok = Mathf.Abs(after.width - w) < 2f && Mathf.Abs(after.height - h) < 2f;
+
                 if (!_warnedWindowGrown)
                 {
                     _warnedWindowGrown = true;
-                    Debug.Log("[PerfAgent] 面板被恢复成了不可用的小尺寸（" + p.width.ToString("0") + "x"
-                        + p.height.ToString("0") + "），已撑到 " + w.ToString("0") + "x" + h.ToString("0")
-                        + "。minSize 只约束手动拖拽，管不住「从布局恢复」与「细条来回」，所以这里主动校正。");
+                    Debug.Log(ok
+                        ? ("[PerfAgent] 面板被恢复成了不可用的小尺寸（" + Fmt(p) + "），已撑到 " + Fmt(after)
+                           + "。minSize 只约束手动拖拽，管不住「从布局恢复」与「细条来回」，所以这里主动校正。")
+                        : ("[PerfAgent] 面板尺寸不可用（" + Fmt(p) + "），但程序改不动它：请求 "
+                           + w.ToString("0") + "x" + h.ToString("0") + "，实际读回 " + Fmt(after)
+                           + "。这说明窗口是**停靠 / 最大化**状态（Unity 的尺寸由布局管，写 position 无效）。"
+                           + "请把它拖出来变成浮动窗口、或拖动分隔条给它更多高度；也可以用菜单"
+                           + " Tools/PerfAgent/窗口：恢复可用尺寸 再看一次结果。"));
                 }
             }
             catch { }
@@ -264,6 +276,43 @@ namespace PerfAgent.UI
             if (now < _nextSizeCheck) return;
             _nextSizeCheck = now + 1.0;
             EnsureUsableWindowSize();
+        }
+
+        static string Fmt(Rect r)
+        {
+            return r.width.ToString("0") + "x" + r.height.ToString("0");
+        }
+
+        /// <summary>
+        /// 菜单：强制把面板设成可用尺寸，并把**真实结果**说出来。
+        ///
+        /// 存在的意义（实测反馈「还是横着一条」）：窗口停靠 / 最大化时，Unity 不接受程序改尺寸 ——
+        /// 这不是 bug 也不是工具问题，但用户看不到这个区别，只会以为「喊了几次你没改」。
+        /// 所以给一个可以当场验证的入口：点一下，状态栏与 Console 会直接告诉你
+        /// 「已经是 900x600」或者「读回来还是 1520x60 —— 请把它拖成浮动窗口 / 拖分隔条」。
+        /// </summary>
+        [MenuItem(MenuRoot + "窗口：恢复可用尺寸", false, 108)]
+        public static void ForceUsableSize()
+        {
+            var window = GetWindow<PerfAgentWindow>("性能诊断");
+            window.minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+
+            if (window._stripped) window.SetStripped(false, true);
+
+            var before = window.position;
+            window.position = new Rect(before.x, before.y, StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+            var after = window.position;
+            bool ok = Mathf.Abs(after.width - StripGeometry.PanelWidth) < 2f
+                      && Mathf.Abs(after.height - StripGeometry.PanelHeight) < 2f;
+
+            string msg = ok
+                ? ("已将面板设为 " + StripGeometry.PanelWidth + "x" + StripGeometry.PanelHeight
+                   + "（原 " + Fmt(before) + "）。")
+                : ("程序改不动这个窗口的尺寸：请求 " + StripGeometry.PanelWidth + "x" + StripGeometry.PanelHeight
+                   + "，实际读回 " + Fmt(after) + "。它应该是**停靠 / 最大化**状态 —— "
+                   + "请把窗口标签拖出来变成浮动窗口（或拖动分隔条给它更多高度），再点一次这个菜单确认。");
+            window.SetStatus(msg);
+            Debug.Log("[PerfAgent] " + msg);
         }
 
         void OnDisable()
