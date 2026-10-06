@@ -105,6 +105,13 @@
 - **Sorting Layer**：`Background` / `Trees` / `Floor` / `Foreground`，**uniqueID 必须与场景里存的一致**
   （场景存的是 ID 不是名字），否则画面层次会全塌到 Default。
 - **Build Settings**：两个场景都已登记（两版的「重开一局」分别依赖 `buildIndex` 与 `loadedLevel`）。
+- **序列化字段名必须和场景里的键一致**。场景存的是**字段名**：
+  上游 `CameraMove` 里的 `public Slingshot SlingShot;` 被改名成 `AfterSlingShot` 时，
+  `.unity` 里那一行还是 `SlingShot:` —— 键名对不上，运行时字段就是 **null**，
+  `AfterCameraMove.Update()` 每帧抛 `NullReferenceException`（已于 2026-10-06 修好：
+  两个场景的键分别改成 `BeforeSlingShot` / `AfterSlingShot`）。
+  如果改完名字又出这种报错，跑一遍体检：
+  `python Assets/PerfAgent/Tests~/Standalone/audit-sample-serialized-fields.py <工程根>`。
 
 ## 其他文件
 

@@ -5729,7 +5729,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ba4194e0411382042a5e2a1fec36c245, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  SlingShot: {fileID: 533937509}
+  BeforeSlingShot: {fileID: 533937509}
 --- !u!114 &1452918269
 MonoBehaviour:
   m_ObjectHideFlags: 0

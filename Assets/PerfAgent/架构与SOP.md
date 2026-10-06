@@ -601,6 +601,16 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
    校验办法：把两份场景/预制体引用的 GUID 与各自的 `.meta` 集合对一遍，并确认两份集合无交集。
    改名的坑：注释里的撇号（`don't`、`we'll`）会被当成字符字面量，**只能用双引号切字符串**，
    否则撇号之后的大段代码会被当成“字符串”跳过改名（实测漏掉了 `public SlingshotState slingshotState;`）。
+
+   **更隐蔽的一个坑：序列化字段名也跟着改了，而场景里存的就是字段名。**（实测事故）
+   上游 `CameraMove` 里写的是 `public Slingshot SlingShot;`，改名后变成
+   `public AfterSlingShot AfterSlingShot;`，而 `.unity` 里那一行还是 `SlingShot: {fileID: …}` ——
+   键名对不上，运行时字段就是 **null**，`AfterCameraMove.Update()` 每帧抛
+   `NullReferenceException`。类名/GUID 对得很齐（编译也干净）也拦不住这类问题：它只存于**数据**里。
+   体检工具：`python Assets/PerfAgent/Tests~/Standalone/audit-sample-serialized-fields.py <工程根>`
+   （按 `m_Script` 的 guid 把场景/预制体里的每个 MonoBehaviour 块映射到脚本，
+   再看每个非 `m_` 开头的键在脚本里有没有对应字段；一行声明多个字段也认）。
+   机械改名的收尾就靠它，别靠眼看。
 2. **共享插件只能留一份**：`PerfAgentSample/Plugins/Demigiant/DOTween`。两份都放会命中
    `Multiple precompiled assemblies with the same name 'DOTween'`，`DOTweenModule*.cs` 也会 `CS0101` 重复定义。
    同理，上游那份 `Assets/Resources/BillingMode.json` 两份都不能留（同名 Resources 路径冲突）。
