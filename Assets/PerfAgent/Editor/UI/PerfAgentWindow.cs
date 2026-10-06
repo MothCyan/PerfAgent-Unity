@@ -548,10 +548,11 @@ namespace PerfAgent.UI
             var bar = new VisualElement();
             bar.style.flexDirection = FlexDirection.Row;
             bar.style.alignItems = Align.Center;
+            bar.style.height = 34;            // 显式一行高（窗口比它高，多出来的就是留白）
             bar.style.backgroundColor = Theme.CardBg;
             Theme.Rounded(bar, Theme.Radius);
             Theme.Border1(bar, Theme.Border);
-            Theme.Pad(bar, 8, 8, 2, 2);
+            Theme.Pad(bar, 10, 10, 3, 3);
             // 只有一行高：禁掉换行 + 裁掉溢出。UI Toolkit 的父元素默认**不裁剪** ——
             // 不设这个的话文字会画出自己的矩形、和右边按钮画在同一片像素上（实测「字叠在一起」）。
             bar.style.overflow = Overflow.Hidden;
@@ -622,7 +623,8 @@ namespace PerfAgent.UI
                     rootVisualElement.style.paddingBottom.value.value);
                 Theme.Pad(rootVisualElement, 4, 4, 4, 4);
                 // minSize 是浮动窗口的硬约束：不改小的话窗口会被拉回面板下限，小窗口就变成一张大空白面板。
-                minSize = new Vector2(360, 24);
+                // 高度给到 40：窗口高度含标题栏，给太小会让正文被裁到看不见。
+                minSize = new Vector2(360, 40);
                 if (moveWindow) ApplyCompactRect();
             }
             else
@@ -654,9 +656,18 @@ namespace PerfAgent.UI
                 float x = from.x + Mathf.Max(0f, (from.width - CompactWindowGeometry.Width) * 0.5f);
                 position = new Rect(x, from.y, CompactWindowGeometry.Width, CompactWindowGeometry.Height);
 
-                // 停靠窗口写 position 不生效（尺寸由布局管）—— 读回来对不上就如实说出来。
-                _compactPositionOk = Mathf.Abs(position.width - CompactWindowGeometry.Width) < 2f
-                                     && Mathf.Abs(position.height - CompactWindowGeometry.Height) < 2f;
+                // 停靠窗口写 position 不生效（尺寸由布局管）—— 读回来对不上就如实说出来，
+                // 并留一条 Console（下次再出现「缩不了/没高度」时，这行日志能直接定位原因）。
+                var after = position;
+                _compactPositionOk = Mathf.Abs(after.width - CompactWindowGeometry.Width) < 2f
+                                     && Mathf.Abs(after.height - CompactWindowGeometry.Height) < 2f;
+                if (!_compactPositionOk)
+                {
+                    UnityEngine.Debug.LogWarning("[PerfAgent] 小窗口尺寸没写进去：请求 "
+                        + CompactWindowGeometry.Width.ToString("0") + "x" + CompactWindowGeometry.Height.ToString("0")
+                        + "，实际读回 " + after.width.ToString("0") + "x" + after.height.ToString("0")
+                        + "。停靠窗口的尺寸由 Unity 布局管（写 position 无效）—— 把它拖成浮动窗口才会真缩成一行。");
+                }
             }
             catch { _compactPositionOk = false; }
         }
