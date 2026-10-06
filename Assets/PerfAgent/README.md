@@ -68,12 +68,25 @@
   每帧 `GetComponent`、每帧 `Debug.Log`、每帧 `Instantiate/Destroy`、手动 `GC.Collect`……共 16 处编号缺陷）；
 - `Samples/AngryBirds_after/`：逐条修完之后（**功能完全一致**，每帧零分配、0 条编译警告）。
 
-用法：用 Unity 打开 Before → Play →「跟随采集」玩 20~30 秒 → 生成快照；
-再打开 After 同样采一份 → 在**对比**里选这两份快照，直接看帧时间 / 每帧分配 / 结论条数的变化。
+**最快的测法**（不用切换工程，两份快照在同一个工程里，可直接对比）：
+
+```
+菜单 Tools/PerfAgent/样例工程/安装 Before（优化之前）
+  → Play → 面板「跟随采集」玩 20~30 秒 → 生成快照
+  → 卸载 → 安装 After（优化之后）→ 再采一份
+  → 「对比」页选这两份快照
+```
+
+安装菜单会自动把样例的 `Assets/**` 复制到 `Assets/PerfAgentFixture`、补上样例需要的
+Tag（`Bird`/`Brick`/`Pig`）与 Sorting Layer（沿用样例的 uniqueID）、把场景加进 Build Settings 并打开；
+卸载会把它们全部回滚。两版的脚本同名，所以一次只装一版。
+
+也可以按 `Samples/README.md` 的「用法 B」用 Unity Hub 单独打开这两个工程
+（注意：跨工程的快照不能直接对比，需要手动拷 JSON）。
 
 - 缺陷编号与修法逐条对照：`Samples/PERF-FAULTS.md`
 - 上游出处、MIT 许可与我们改了什么：`Samples/NOTICE.md`
-- 怎么打开、怎么跑：`Samples/README.md`
+- 两种用法、安装器做了什么：`Samples/README.md`
 
 ## 为什么要接 AI 做 Agent（以及没有 AI 时它是什么）
 

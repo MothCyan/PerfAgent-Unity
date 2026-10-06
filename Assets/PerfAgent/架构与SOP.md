@@ -509,6 +509,16 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
    「静态扫描」与「动态采集」互补的分界（`PERF-FAULTS.md` 第五节）。
 4. 遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自己起隐藏宿主对象，**不改场景文件**，
    避免为了挂一个组件去手改 `.unity` 的 YAML（那样极易把场景改坏）。
+5. **提供了一键装载菜单**（`Editor/Samples/SampleFixtureInstaller.cs`，`Tools/PerfAgent/样例工程/`）：
+   把样例的 `Assets/**` 复制进当前工程的 `Assets/PerfAgentFixture`（已在根 .gitignore 忽略），
+   一次只装一版（两版脚本同名），卸载时删目录 + 回滚项目设置 + 从 Build Settings 移除场景、**保留快照**。
+   为什么要有它：`Samples/` 不在 `Assets/` 下，Unity 不导入 → Project 窗口里看不到；
+   而快照按工程存放（`ProjectSettings/PerfAgent/Snapshots`），跨工程连「对比」都选不到一起。
+   注意装载时必须同步三样东西，手工拷贝最容易漏：
+   - **Tag**：`FindGameObjectsWithTag` / `CompareTag` 用到未定义的 Tag 会直接抛异常（`Tag: Bird is not defined`）；
+   - **Sorting Layer**：场景里存的是 **uniqueID 而不是名字**，补层时必须沿用样例的 ID
+     （且该 ID 是 `uint`，样例里有超过 `int.MaxValue` 的值，写入 TagManager 要按位转）；
+   - **Build Settings**：`SceneManager.LoadScene(buildIndex)` / `Application.loadedLevel` 都依赖场景已登记。
 
 ## 十二、离线验证与工具链（本机实测过的坑）
 

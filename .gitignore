@@ -55,6 +55,9 @@ Thumbs.db
 # 本机备份
 manifest.json.bak
 
+# 「安装样例工程」菜单装进来的东西（Tools/PerfAgent/样例工程/）
+/Assets/PerfAgentFixture/
+
 # Samples/ 下的前后对照样例工程（它们是独立 Unity 工程，打开后会生成同样的本地目录）
 /Samples/*/[Ll]ibrary/
 /Samples/*/[Tt]emp/
