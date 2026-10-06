@@ -246,6 +246,19 @@ namespace PerfAgent.Agent
             Busy = false;
             string content = MiniJson.Str(message, "content", "");
 
+            // 端点只回了思维链、没给正文：
+            // **不能**把那段思考当答案贴进对话区 —— 它常常是半句话（推理内容把 max_tokens 吃完时
+            // 正文根本没轮到），用户看到的就是「模型在自说自话」（实测反馈）。
+            // 完整内容进 Console，对话区只给结论与下一步。
+            if (LlmClient.LastContentFromReasoning)
+            {
+                UnityEngine.Debug.LogWarning("[PerfAgent] 模型只返回了推理内容（没有正文），完整内容如下：\n" + content);
+                LastAnswer = "";
+                Status("未取到正文");
+                onError(DescribeReasoningOnly());
+                return;
+            }
+
             if (string.IsNullOrEmpty(content))
             {
                 onError(DescribeEmptyAnswer());
@@ -256,6 +269,31 @@ namespace PerfAgent.Agent
             LastAnswer = content;
             Status("完成");
             onDone(content);
+        }
+
+        /// <summary>
+        /// 「只回了思考过程」时的结论与下一步。
+        /// 两种情形分开说（是否被 max_tokens 截断），因为下一步不一样：
+        /// 截断 → 调大输出 tokens；没截断 → 这个端点/模型不适合，换模型。
+        /// </summary>
+        static string DescribeReasoningOnly()
+        {
+            var cfg = PerfAgentSettings.Config;
+            bool truncated = LlmClient.LastFinishReason == "length";
+
+            var sb = new StringBuilder();
+            sb.Append(truncated
+                ? "模型把输出预算全用在推理上了，正文没轮到（finish_reason=length）。"
+                : "这个端点只返回了推理内容（reasoning_content）、没有正文。");
+            sb.Append("\n本次：推理内容 ").Append(LlmClient.LastReasoningLength).Append(" 字，正文 0 字；")
+              .Append("当前「最大输出 tokens」= ").Append(cfg.maxOutputTokens).Append("。");
+            sb.Append("\n\n建议：")
+              .Append("① 在「LLM 配置」把最大输出 tokens 调到 4096 以上")
+              .Append(truncated ? "，给它留出写正文的余地" : "")
+              .Append("；② 或换成普通的对话模型（deepseek-chat / gpt-4o-mini 这类），")
+              .Append("推理型模型与本工具的工具调用流程合不来。");
+            sb.Append("\n\n（完整的思考内容已打到 Console，没有占用对话区。）");
+            return sb.ToString();
         }
 
         /// <summary>

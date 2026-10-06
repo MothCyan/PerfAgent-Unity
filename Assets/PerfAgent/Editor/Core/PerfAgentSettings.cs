@@ -93,7 +93,9 @@ namespace PerfAgent.Core
         public string model = "gpt-4o-mini";
         [Range(0f, 1f)] public float temperature = 0.2f;
         public int maxSteps = 8;             // 工具调用最大轮数，防失控
-        public int maxOutputTokens = 1500;
+        // 4096 而不是 1500：推理型模型会把输出预算先花在 reasoning_content 上，
+        // 1500 时常见「推理写完、正文没轮到」（finish_reason=length）。
+        public int maxOutputTokens = 4096;
 
         [Header("隐私")]
         public bool allowSourceCodeUpload = false;   // 是否允许把脚本片段发给远端
