@@ -31,6 +31,10 @@ namespace PerfAgent.Collectors
             var audioSources = SceneObjects<AudioSource>();
             var colliders = SceneObjects<Collider>();
             var rigidbodies = SceneObjects<Rigidbody>();
+            // 2D 游戏里 Collider2D / Rigidbody2D 与 3D 那套是两个独立类型，
+            // 只统计 3D 会让一份地道的 2D 场景报告出「Collider 0 / Rigidbody 0」（实测样例就是这么被误读的）
+            var colliders2D = SceneObjects<Collider2D>();
+            var rigidbodies2D = SceneObjects<Rigidbody2D>();
             var monoBehaviours = SceneObjects<MonoBehaviour>();
 
             s.SetMetric("MeshRenderer", "个", meshRenderers.Count, "场景内");
@@ -41,8 +45,10 @@ namespace PerfAgent.Collectors
             s.SetMetric("Canvas", "个", canvases.Count, "场景内");
             s.SetMetric("Animator", "个", animators.Count, "场景内");
             s.SetMetric("AudioSource", "个", audioSources.Count, "场景内");
-            s.SetMetric("Collider", "个", colliders.Count, "场景内");
-            s.SetMetric("Rigidbody", "个", rigidbodies.Count, "场景内");
+            s.SetMetric("Collider", "个", colliders.Count, "场景内（3D）");
+            s.SetMetric("Rigidbody", "个", rigidbodies.Count, "场景内（3D）");
+            s.SetMetric("Collider2D", "个", colliders2D.Count, "场景内（2D）");
+            s.SetMetric("Rigidbody2D", "个", rigidbodies2D.Count, "场景内（2D）");
             s.SetMetric("MonoBehaviour", "个", monoBehaviours.Count, "场景内（含第三方组件）");
 
             var tmpType = Reflect.FindType("TMPro.TMP_Text");

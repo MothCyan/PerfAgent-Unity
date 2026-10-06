@@ -58,7 +58,26 @@ namespace PerfAgent.Analysis
         static void EvaluateSampleSize(List<PerfFinding> outList, PerfSnapshot s, PerfBudget b)
         {
             int window = s.WindowFrames();
-            if (window <= 0 || window >= PerfSnapshot.MinFramesForStats) return;
+            if (window >= PerfSnapshot.MinFramesForStats) return;
+
+            // 一帧都没采到：这不是「样本少」，而是「整段动态数据都不存在」。
+            // 实测场景：优化前后的两份报告长得一模一样、都只剩资源类结论 —— 因为两份都没采到帧。
+            // 必须把它当成一条醒目结论报出来，否则报告会安静地骗人。
+            if (window <= 0)
+            {
+                var none = New("capture_no_frames", "采集", Severity.Error,
+                    "本次没有采到帧：动态指标全部不可用",
+                    "快照里没有任何帧（Profiler 面板窗口为空），所以帧耗时、每帧分配、Draw Call、SetPass、"
+                    + "三角面这些依赖帧数据的指标都没有值，规则侧也不会产出任何与之相关的结论；"
+                    + "剩下能看的只有工程级审计（资源、场景、代码）。",
+                    "先确认进 Play 后 Profiler 确实在记录（采集期间面板会显示「已记录 N 帧」，一直是 0 就是没录上），"
+                    + "再重新采一次；这份数据不能用于优化前后的对比。",
+                    0.95f);
+                Ev(none, "frame_capture", "采集窗口帧数", "0", "帧",
+                    PerfSnapshot.MinFramesForStats + " 帧", "Profiler 面板帧历史（firstFrameIndex / lastFrameIndex）");
+                outList.Add(none);
+                return;
+            }
 
             var f = New("sample_too_small", "采集", Severity.Info,
                 string.Format(CultureInfo.InvariantCulture, "采集窗口只有 {0} 帧，统计类结论已跳过", window),

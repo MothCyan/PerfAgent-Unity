@@ -28,6 +28,7 @@ namespace PerfAgent.RuleRegression
                 EditorOverheadIsNotReportedAsProjectProblem,
                 EmptyProjectPlayModeAllocStaysUnattributed,
                 TinyCaptureWindowSuppressesSampleDependentVerdicts,
+                ZeroFrameCaptureIsReportedAsError,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
                 ProjectAllocAboveNoiseBandStillFires,
                 ExcessiveDrawCalls,
@@ -75,6 +76,8 @@ namespace PerfAgent.RuleRegression
             MessageHygieneTests.Register(tests);
             NumberVerifierTests.Register(tests);
             MarkdownLiteTests.Register(tests);
+            ScriptScopeTests.Register(tests);
+            CaptureWindowTests.Register(tests);
 
             var failed = 0;
             foreach (var test in tests)
@@ -189,6 +192,30 @@ namespace PerfAgent.RuleRegression
             var small = Single(snapshot, f => f.id == "sample_too_small");
             Equal(Severity.Info, small.severity, "sample_too_small severity");
             Evidence(small);
+        }
+
+        /// <summary>
+        /// 实测回归：优化前后的两份报告长得一模一样、都只剩资源类结论 ——
+        /// 因为两份都没采到帧（Profiler 没在记录）。
+        /// 「一帧都没有」必须报成一条醒目结论，否则「没数据」会被读成「没问题」。
+        /// </summary>
+        static void ZeroFrameCaptureIsReportedAsError()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.capturedFrameCount = 0;
+            snapshot.frames.Clear();
+
+            var findings = Evaluate(snapshot);
+            var missing = Single(snapshot, f => f.id == "capture_no_frames");
+            Equal(Severity.Error, missing.severity, "capture_no_frames 必须是 Error 级（安静地报「没问题」比报错更糟）");
+            Equal(1, findings.FindAll(f => f.id == "capture_no_frames").Count, "无帧快照应当且只报一条");
+            Evidence(missing);
+
+            // 有帧的正常快照必须不出这条（反例）
+            var ok = CleanSnapshot();
+            ok.capturedFrameCount = 600;
+            Equal(0, Evaluate(ok).FindAll(f => f.id == "capture_no_frames").Count,
+                "有帧的快照不能报「没有采到帧」");
         }
 
         /// <summary>

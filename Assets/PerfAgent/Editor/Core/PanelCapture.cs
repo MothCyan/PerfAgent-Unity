@@ -6,6 +6,7 @@ using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using PerfAgent.Collectors;
+using PerfAgent.Utils;
 
 namespace PerfAgent.Core
 {
@@ -40,8 +41,14 @@ namespace PerfAgent.Core
         /// <summary>面板已记录的帧数（进度显示用；不是采样数）。</summary>
         public int CapturedCount { get; private set; }
 
-        /// <summary>窗口起点（面板帧号）；-1 = 还没开始。</summary>
+        /// <summary>窗口起点（面板帧号）；-1 = 开始采集时面板还没有帧。</summary>
         public int startFrame { get; private set; }
+
+        /// <summary>
+        /// 窗口起点是「回推」得到的：开始采集那一刻面板还没有帧，收尾时改用面板里最早的一帧。
+        /// 快照里会写明这种情况（窗口可能包含采集开始前后的少量帧）。
+        /// </summary>
+        public bool startFrameInferred { get; private set; }
 
         readonly Action<PanelCaptureData> _onDone;
         readonly Action<float> _onProgress;
@@ -49,6 +56,7 @@ namespace PerfAgent.Core
 
         double _nextPoll;
         int _pollIntervalMs = 250;
+        bool _warnedNoFrames;
 
         /// <summary>
         /// 只用来「点亮」GC 分配计数器的订阅（不读它的值）。
@@ -78,6 +86,7 @@ namespace PerfAgent.Core
 
             running = true;
             startFrame = -1;
+            startFrameInferred = false;
             CapturedCount = 0;
 
             // 面板在记录，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
@@ -128,14 +137,66 @@ namespace PerfAgent.Core
 
             // 先把已录下来的帧读完，再归还开关并释放帧数据
             int last = ProfilerApi.LastFrameIndex;
-            PanelCaptureData data = startFrame < 0
-                ? new PanelCaptureData { unavailableReason = "采集还没开始就结束了" }
-                : ProfilerPanel.Read(startFrame + 1, last, ProfilerPanel.MaxSamples, warmupSeconds);
+
+            // 开始时面板还没有帧（上一轮收尾把 Profiler 关掉并清空了帧数据），
+            // 而本轮可能直到收尾都没轮询过一次 —— 这里再试一次，否则整段采集会被判成「还没开始就结束了」
+            AdoptStartFrame(last);
+
+            int firstFrame, lastFrame;
+            bool inferred;
+            PanelCaptureData data;
+            if (last < 0)
+            {
+                data = new PanelCaptureData { unavailableReason = DescribeEmptyProfiler() };
+            }
+            else if (!CaptureWindow.TryResolve(startFrame, ProfilerApi.FirstFrameIndex, last,
+                                               out firstFrame, out lastFrame, out inferred))
+            {
+                data = new PanelCaptureData
+                {
+                    unavailableReason = "Profiler 面板在采集期间没有记录到新帧（开始时帧号 "
+                        + startFrame + "，结束时帧号 " + last + "）"
+                };
+            }
+            else
+            {
+                data = ProfilerPanel.Read(firstFrame, lastFrame, ProfilerPanel.MaxSamples, warmupSeconds);
+                if (data != null && data.available && (inferred || startFrameInferred))
+                {
+                    data.notes.Add("采集窗口起点是回推的：开始采集那一刻 Profiler 面板还没有帧"
+                        + "（这一轮采集刚把 Profiler 打开），于是用面板里最早的一帧（" + firstFrame
+                        + "）作为起点；窗口因此可能包含采集开始前后的少量帧。");
+                }
+            }
 
             StatRecorder.Dispose(ref _gcAllocRegistration);
             ProfilerOwnership.Release();
 
             _onDone(data);
+        }
+
+        /// <summary>
+        /// 开始时面板还没有帧时，把窗口起点补成「录到的第一帧」。
+        ///
+        /// 为什么会有这种情况：上一轮采集结束时 <see cref="ProfilerOwnership.Release"/> 会把 Profiler
+        /// 关掉并清空帧数据；下一轮进入 Play 刚把 <c>enabled</c> 打开时，<c>lastFrameIndex</c> 还是 -1。
+        /// 而窗口起点只在 <see cref="Start"/> 算过一次 —— 不回推的话，之前几十秒的 Play 数据全白采。
+        /// </summary>
+        void AdoptStartFrame(int last)
+        {
+            if (startFrame >= 0 || last < 0) return;
+            startFrame = last;
+            startFrameInferred = true;
+        }
+
+        /// <summary>面板一帧都没有时的原因——把 Profiler 的实际状态写出来，下次能直接定位。</summary>
+        static string DescribeEmptyProfiler()
+        {
+            return "Profiler 面板一帧都没录到（enabled=" + ProfilerApi.Enabled
+                + "，profileEditor=" + ProfilerApi.ProfileEditor
+                + "，historyLength=" + ProfilerApi.MaxHistoryLength
+                + "，firstFrameIndex=" + ProfilerApi.FirstFrameIndex
+                + "，lastFrameIndex=" + ProfilerApi.LastFrameIndex + "）";
         }
 
         void Poll()
@@ -148,7 +209,22 @@ namespace PerfAgent.Core
             _nextPoll = now + _pollIntervalMs;
 
             int last = ProfilerApi.LastFrameIndex;
+            AdoptStartFrame(last);
             CapturedCount = (startFrame < 0 || last < startFrame) ? 0 : last - startFrame;
+
+            // 采集进行中却一直没帧：当场把原因说出来，而不是等收尾时交一份「干净」报告。
+            // 实测：用户玩了几十秒、两份报告都只剩资源类结论，因为 Profiler 一直没在记录帧。
+            if (!_warnedNoFrames && last < 0 && _clock.Elapsed.TotalSeconds > 2.0)
+            {
+                _warnedNoFrames = true;
+                UnityEngine.Debug.LogWarning("[PerfAgent] 采集已开始 "
+                    + _clock.Elapsed.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture)
+                    + " 秒，但 Profiler 一帧都没录到（enabled=" + ProfilerApi.Enabled
+                    + "，profileEditor=" + ProfilerApi.ProfileEditor
+                    + "，historyLength=" + ProfilerApi.MaxHistoryLength + "）。"
+                    + "请到 Profiler 窗口确认 Record 是开着的（本工具会自动打开，但被手动暂停时不会自己恢复）；"
+                    + "否则这次采集不会产出任何帧数据，报告里只剩工程级审计。");
+            }
 
             if (_onProgress != null)
             {

@@ -19,6 +19,34 @@ namespace PerfAgent.Analysis
     {
         // 数值对账的正则与口径已搬到 NumberVerifier（那部分不依赖 Unity，可离线回归）
 
+        /// <summary>
+        /// 报告里标注「这是哪个插件版本、程序集什么时候编出来的」。
+        ///
+        /// 为什么要写它：编辑器源码编译失败时，Unity 会**继续跑上一次编译成功的程序集**，
+        /// 于是报告可能来自旧版插件 —— 实测踩过：两份报告都写着「采集还没开始就结束了」，
+        /// 而那个字符串在当前源码里早就没有了（只剩注释）。有了戳就能一眼分辨报告的新旧。
+        /// </summary>
+        static string BuildStamp()
+        {
+            try
+            {
+                var asm = typeof(PerfReportExporter).Assembly;
+                string ver = (asm.GetName().Version ?? new Version(0, 0)).ToString();
+                string built = "未知";
+                try
+                {
+                    string loc = asm.Location;
+                    if (!string.IsNullOrEmpty(loc) && File.Exists(loc))
+                    {
+                        built = File.GetLastWriteTime(loc).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+                    }
+                }
+                catch { }
+                return "v" + ver + "（程序集 " + built + "）";
+            }
+            catch { return "未知"; }
+        }
+
         // =====================================================================
         // Markdown
         // =====================================================================
@@ -37,13 +65,27 @@ namespace PerfAgent.Analysis
             sb.Append("| 显卡 | ").Append(s.graphicsDevice).Append(" |\n");
             sb.Append("| 渲染管线 | ").Append(s.renderPipeline).Append(" |\n");
             sb.Append("| 场景 | ").Append(s.scenePath).Append(" |\n");
+            sb.Append("| PerfAgent | ").Append(BuildStamp()).Append(" |\n");
 
             // 「采样帧数」以前写的是逐帧明细条数（2 帧），而附录又写着「窗口共 10 帧」——
             // 同一个报告里两个帧数对不上。这里改成口径分开写：窗口看整体，明细看抽样。
             int windowFrames = s.WindowFrames();
             sb.Append("| 采集窗口 | ")
-              .Append(windowFrames > 0 ? windowFrames.ToString(CultureInfo.InvariantCulture) + " 帧" : "未知")
+              .Append(windowFrames > 0
+                  ? windowFrames.ToString(CultureInfo.InvariantCulture) + " 帧"
+                  : "**无帧数据**")
               .Append("（逐帧明细抽样 ").Append(s.frames.Count).Append(" 帧） |\n\n");
+
+            // 一帧都没采到时，最危险的不是「没数据」，而是读者把它当成「没发现问题」：
+            // 实测踩过 ‐ 优化前后的两份报告长得一模一样（都只有资源类结论），
+            // 原因就是两份都没采到帧。必须在最上面把话说死。
+            if (windowFrames <= 0)
+            {
+                sb.Append("> **本次没有采到帧。**帧耗时 / 每帧分配 / Draw Call / SetPass / 三角面这些依赖帧数据的量"
+                          + "**全部不可用**，下面剩下的只有工程级审计（资源、场景、代码）。\n"
+                          + "> 所以这份数据**不能**用来判断「优化前 vs 优化后」：请先让 Profiler 处于记录状态再采一次"
+                          + "（判断方法：采集期间面板会实时显示「已记录 N 帧」，它一直是 0 就是没录上）。\n\n");
+            }
 
             // ---- 关键指标 ----
             sb.Append("## 关键指标\n\n");

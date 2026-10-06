@@ -305,7 +305,24 @@ JsonlAnalysisStore.Current = new SqliteAnalysisStore();   // 启动处替换
 现在这个校验只作用于**规则/LLM 写出来的叙述**（结论标题、说明、建议）；采集器写入的数据表作为「已对账」来源。
 Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 —— 那才是它真正要防的场景。
 
-### 10.5 验收方式
+### 10.5 「没数据」必须比「没问题」更醒目
+
+比报假问题更坏的一种情况是：**什么都没有报，读者却以为排查过了**。实测踩过一次：
+用户采了两份快照（优化前 / 优化后）来做对比，两份报告长得一模一样、都只剩资源类结论 ——
+因为两份都**一帧都没采到**（Profiler 没在记录），而当时的规则侧对 `window <= 0` 是**直接 return**，
+连一条「样本不足」的提示都没有（那是 10.3 的路径，它要求 `window > 0`）。
+
+现在的口径：
+
+- 窗口为 0 帧 → 产一条 **Error 级**结论 `capture_no_frames`（含证据链：采集窗口帧数 = 0），
+  并写明「这份数据不能用于优化前后的对比」；
+- 报告头部「采集窗口」直接写 **无帧数据**，下面紧跟一段引用块提醒；
+- 采集**进行中**就提醒：超过 2 秒 `lastFrameIndex` 还是 -1 就往 Console 打一条 Warning
+  （附带 `enabled` / `profileEditor` / `historyLength`），别等用户玩完才告诉他白采了；
+- 报告头部加一列 `PerfAgent vX.Y.Z（程序集 时间）` —— 编辑器源码编译失败时会在**旧程序集**上继续跑，
+  那个字符串能一眼分辨报告是哪个版本产的（实测：两份报告的提示串在新源码里早已不存在）。
+
+### 10.6 验收方式
 
 每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`）：
 
@@ -316,6 +333,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `EditorOverheadIsNotReportedAsProjectProblem` | 基线很大时（97409 B）残差不得报 |
 | `ProjectAllocAboveNoiseBandStillFires` | 残差真的很大时（60 KB）仍然要报，且带完整证据链 |
 | `MissingBaselineSuppressesPerFrameAllocVerdict` | 没有基线时不得给分配结论 |
+| `ZeroFrameCaptureIsReportedAsError` | 一帧都没采到时必须报 Error 结论（有帧的快照不得报） |
 
 ---
 
@@ -541,4 +559,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
   用 Python `urllib` 直接下 `codeload.github.com/<owner>/<repo>/zip/refs/heads/<branch>` 最省事。
 - 批量改名/重写 GUID 这类机械改动**用脚本做、再靠编译校验**；脚本里的字符串切分只认双引号
   （注释里的撇号会把后面的代码吞进“字符串”，实测漏改）。
+- **编辑器编译失败时会继续跑上一次编译成功的程序集**：表现是「行为跟源码对不上」，很容易误判成逻辑 bug。
+  判别办法：报告头里的 `PerfAgent vX.Y.Z（程序集 …）` 时间戳、以及提示串能不能在源码里 grep 到；
+  查完记得看 Console 里有没有 `error CS`。
 
