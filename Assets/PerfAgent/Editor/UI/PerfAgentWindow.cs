@@ -108,7 +108,8 @@ namespace PerfAgent.UI
         public static void Open()
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
-            window.minSize = new Vector2(900, 600);
+            window.minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+            window.EnsureUsableWindowSize();
             window.Show();
         }
 
@@ -202,14 +203,38 @@ namespace PerfAgent.UI
         {
             // minSize 以前只在 Open() 里设过。而窗口被 Unity 从布局恢复时不走 Open()，
             // 于是可以恢复成一个很小的尺寸：两栏被挤扁、卡片内容互相重叠（实测就是这样）。
-            // 这里也设一遍，让恢复回来的窗口被拉回可用尺寸。
-            minSize = new Vector2(900, 600);
+            // 这里也设一遍，并**主动撑一下**：minSize 只限制手动拖拽，
+            // 管不住「从布局里恢复成小窗口」与「细条来回后 minSize 被域重载清掉」这两种情况
+            //（实测用户截图：整个面板只剩一条监视行，字还被截到「口径」）。
+            minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+            EnsureUsableWindowSize();
 
             PerfSession.Changed += OnSessionChanged;
             PerfAgentSettingsWindow.Changed += RefreshLlmStatus;
             Agent.OnStatus += SetStatus;
             EditorApplication.update += PollFollowCapture;
             FollowCapture.Changed += OnFollowCaptureChanged;
+        }
+
+        /// <summary>
+        /// 把面板撑回可用尺寸（不碰细条状态，也不碰停靠窗口 —— 停靠时写 position 不生效，Unity 自己忽略）。
+        ///
+        /// 为什么需要「主动撑」而不是只设 minSize：minSize 只约束手动拖拽。窗口尺寸是持久化的，
+        /// 一旦被存成小尺寸（或细条收/展切换时 minSize 被域重载清掉），它就会一直小下去，
+        /// 而内容只会被裁掉 —— 用户看到的就是「面板只剩一条监视行」。
+        /// </summary>
+        void EnsureUsableWindowSize()
+        {
+            if (_stripped) return;   // 细条期间绝不能撑
+            try
+            {
+                var p = position;
+                if (!StripGeometry.NeedsGrow(p.width, p.height)) return;
+                position = new Rect(p.x, p.y,
+                    StripGeometry.Grow(p.width, StripGeometry.PanelWidth),
+                    StripGeometry.Grow(p.height, StripGeometry.PanelHeight));
+            }
+            catch { }
         }
 
         void OnDisable()
@@ -701,7 +726,8 @@ namespace PerfAgent.UI
                 }
                 else if (!TryLoadPreStripRect(out _preStripRect))
                 {
-                    _preStripRect = new Rect(position.x, position.y, 900f, 600f);
+                    _preStripRect = new Rect(position.x, position.y,
+                        StripGeometry.PanelWidth, StripGeometry.PanelHeight);
                 }
 
                 _preStripMinSize = minSize;
@@ -718,12 +744,20 @@ namespace PerfAgent.UI
             }
             else
             {
-                if (_preStripMinSize.x > 1f) minSize = _preStripMinSize;
+                // 展开：minSize 先恢复成面板下限。
+                // 不能只信 _preStripMinSize —— 进 Play 会域重载，它早就被清掉了（实测就是这个原因
+                // 让面板带着细条的 minSize 回来，于是能一直小下去）。
+                minSize = _preStripMinSize.x > 1f
+                    ? _preStripMinSize
+                    : new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
                 Theme.Pad(rootVisualElement, _preStripPadding.x, _preStripPadding.y, _preStripPadding.z, _preStripPadding.w);
                 if (_preStripRect.width <= 1f && !TryLoadPreStripRect(out _preStripRect))
-                    _preStripRect = new Rect(position.x, position.y, 900f, 600f);
+                    _preStripRect = new Rect(position.x, position.y,
+                        StripGeometry.PanelWidth, StripGeometry.PanelHeight);
                 if (moveWindow) RestoreStripRect();
                 try { SessionState.EraseString(StripPrevRectKey); } catch { }
+                // 恢复回来的 rect 也可能本身就被存小了 —— 兜底撑到可用尺寸。
+                EnsureUsableWindowSize();
             }
 
             RefreshStripText();

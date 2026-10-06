@@ -8,15 +8,40 @@ namespace PerfAgent.Utils
     ///
     /// 抽成纯逻辑（不引用 UnityEngine / UnityEditor）是为了能离线回归。这里挡的是一个会把面板**弄废**的
     /// 事故：进 Play 必然触发域重载，字段全被清空，而窗口尺寸是持久的 ——
-    /// 重载后再收起时，当前尺寸可能**已经是细条**（520x32）。如果直接把它当成「原来的尺寸」存下来，
-    /// 采集结束后就会「恢复」成一个 520x32 的面板：内容全在，但窗口小得看不见、也拖不大。
+    /// 重载后再收起时，当前尺寸可能**已经是细条**。如果直接把它当成「原来的尺寸」存下来，
+    /// 采集结束后就会「恢复」成一个细条面板：内容全在，但窗口小得看不见、也拖不大。
     /// 所以判定「看起来像不像细条」这件事必须能被测。
     /// </summary>
     public static class StripGeometry
     {
-        /// <summary>细条的目标尺寸。宽高要小到不挡 Game 视图，又要能放下帧率数字 + 两个按钮。</summary>
-        public const float Width = 520f;
-        public const float Height = 32f;
+        /// <summary>
+        /// 细条的目标尺寸。宽高要小到不挡 Game 视图，又要能放下帧率 + 帧耗时 P50/P95/峰值 + 已记录帧数
+        ///（实测反馈：520x32 时这行字会被截到「口径」就没了，所以放宽 —— 宽度是按真实文案量出来的）。
+        /// </summary>
+        public const float Width = 720f;
+        public const float Height = 36f;
+
+        /// <summary>
+        /// 面板恢复正常（非细条）时的可用尺寸下限。
+        ///
+        /// 低于它，两栏会被挤到互相重叠 —— 实测就是「整个面板只剩一条监视行」（用户截图）。
+        /// 而 Unity 的 <c>minSize</c> 只能限制**手动拖拽**，管不住「从布局里恢复成小窗口」与
+        /// 「细条来回后 minSize 被域重载清掉」这两种情况，所以还需要主动擑一下。
+        /// </summary>
+        public const float PanelWidth = 900f;
+        public const float PanelHeight = 600f;
+
+        /// <summary>这个窗口尺寸是不是小到必须被擑回面板尺寸（保持左上角不变地擑）。</summary>
+        public static bool NeedsGrow(float width, float height)
+        {
+            return width < PanelWidth - 1f || height < PanelHeight - 1f;
+        }
+
+        /// <summary>把尺寸擑到不低于下限（已足够大就原样返回）。</summary>
+        public static float Grow(float current, float min)
+        {
+            return current < min ? min : current;
+        }
 
         /// <summary>
         /// 这个尺寸看起来就是「细条」吗（即：不能拿它当「收起前的尺寸」存下来）。
