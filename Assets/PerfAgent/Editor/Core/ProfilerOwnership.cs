@@ -27,6 +27,7 @@ namespace PerfAgent.Core
         const string PrevEditorKey = "PerfAgent.Profiler.PrevProfileEditor";
         const string PrevHistoryKey = "PerfAgent.Profiler.PrevHistoryLength";
         const string WarnedHistoryKey = "PerfAgent.Profiler.WarnedShortHistory";
+        const string WarnedEditorKey = "PerfAgent.Profiler.WarnedEditorTarget";
 
         /// <summary>
         /// 我们记录期间允许的面板历史长度。
@@ -43,10 +44,12 @@ namespace PerfAgent.Core
         }
 
         /// <summary>
-        /// 借出：确保 Profiler 在记录。<paramref name="needProfileEditor"/> 为 true 时额外打开
-        /// 「分析编辑器自身」—— 非 Play 模式下不开它的话，面板根本不记录编辑器帧
-        /// （<c>lastFrameIndex</c> 不推进，读出来永远是 0 帧）。
-        /// 用户自己开着 Profiler 时也照常记录，只额外压一下历史上限，归还时不动他的开关。
+        /// 借出：确保 Profiler 在记录、**且记录目标就是编辑器自身**。<paramref name="needProfileEditor"/> 为 true 时
+        /// 额外打开「分析编辑器自身」—— 它不是「非 Play 才需要」的候选开关，而是「到底会不会写帧」的开关：
+        /// 实测（2026-10-07）重启编辑器后没开过 Profiler 窗口，<c>profileEditor=false</c>，
+        /// 此时 <c>enabled=true</c> 也会一帧不写（first/last 恒为 -1），日志里却只看到「在记录」。
+        /// 以前没暴露只是因为用户自己开着 Profiler 窗口（窗口会把该开关置 true）。
+        /// 采集期间置 true，归还时还原用户原值。
         /// </summary>
         public static void Acquire(bool needProfileEditor)
         {
@@ -56,7 +59,10 @@ namespace PerfAgent.Core
                 int prevHistory = 0;
                 try
                 {
-                    prevEnabled = ProfilerApi.Enabled;
+                    // 用真值读（Enabled 的 getter 会拿 profileEditor 顶）：否则归还时会把
+                    // 「本来是关的」记成「本来是开的」，于是 enabled=true 永远留在编辑器里，
+                    // Profiler 帧数据继续膨胀 —— 正是这套借还机制最想避免的事。
+                    prevEnabled = ProfilerApi.EnabledRaw;
                     prevEditor = ProfilerApi.ProfileEditor;
                     prevHistory = ProfilerApi.MaxHistoryLength;
                 }
@@ -78,6 +84,19 @@ namespace PerfAgent.Core
                 // 否则 profileEditor=true + enabled=false 会被当成「已经开着」而不去开（实测踩过）。
                 if (!ProfilerApi.EnabledRaw) ProfilerApi.EnsureEnabled();
                 if (needProfileEditor && !ProfilerApi.ProfileEditor) ProfilerApi.ProfileEditor = true;
+                // 切记录目标有可能把 enabled 带回去，回读一遍再补齐（两个开关都必须是真值）
+                if (!ProfilerApi.EnabledRaw) ProfilerApi.EnsureEnabled();
+
+                // 目标切不过去就等于「采多久都是 0 帧」，必须当成错误报出来，
+                // 否则用户只会看到一份只剩工程级审计的报告。
+                if (needProfileEditor && !ProfilerApi.ProfileEditor
+                    && !SessionState.GetBool(WarnedEditorKey, false))
+                {
+                    SessionState.SetBool(WarnedEditorKey, true);
+                    Debug.LogWarning("[PerfAgent] 无法把 Profiler 的记录目标切到编辑器自身（profileEditor 回读仍是 false）："
+                        + "这种状态下即使 enabled=true 也不会写出任何帧（表现就是一直 0 帧）。"
+                        + "请手动打开一次 Profiler 窗口（窗口自己会把目标切回编辑器）后再开始采集。");
+                }
 
                 // 面板历史必须是「我们想要的那个值」，不能只在它更大时才压小。
                 // 实测踩过：反射取不到 maxHistoryLength 时 getter 返回兑底值 300，300 < 2000 → 不设置，

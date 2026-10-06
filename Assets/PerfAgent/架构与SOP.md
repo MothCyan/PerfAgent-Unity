@@ -378,11 +378,31 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 - 新增 **`ProfilerApi.EnabledRaw`**（只读 `enabled`，不做任何兜底）与 `EnsureEnabled()`（写后读回校验），
   诊断 / 报错 / 自愈一律用 `EnabledRaw`；合并读法只留给「人看的探针输出」；
-- `ProfilerApi.RestartRecording(keepEditorFrames)`：清帧 → `enabled=false` → 重新开启 → 可选恢复 `profileEditor`，
+- `ProfilerApi.RestartRecording(ensureEditorTarget)`：清帧 → `enabled=false` → 重新开启 → **强制**切记录目标，
   用于把偶发的「开着但什么都不写」的僵死记录会话换掉；
 - 采集期间持续 10 秒 0 帧：Console 打一条**含前后两个开关真值**的警告，并**强制重开一次记录会话**
   （此刻帧数是 0，清历史不丢东西；只自愈一次，免得采集期间刷日志产生分配）；
 - API 探针里 `enabled` / `profileEditor` / 合并读法**分开列**，避免再次误判。
+
+**第三个坑（真正的元凶）：`profileEditor` 才是「到底会不会写帧」的总闸，跟 Play 无关。**
+现场日志：`enabled=True，profileEditor=False，historyLength=300，firstFrameIndex=-1，lastFrameIndex=-1` ——
+`enabled` 开着，面板一帧都没写出来。原因：`profileEditor` 表示「Profiler 的记录目标是不是编辑器自身」，
+目标不是编辑器（停在上一个连过的设备 / 没选目标）时，`enabled=true` 也**一帧都不写**。
+
+为什么以前看起来「只要 enabled」：用户自己开着 Profiler 窗口，**窗口会把 `profileEditor` 置 true**，
+等于顺手替我们开了这个开关。重启编辑器后没开过 Profiler 窗口 → 目标为假 → 采多久都是 0 帧。
+所以：
+
+- `PanelCapture.Start()` 改为 `ProfilerOwnership.Acquire(true)` —— 采集期间**必须**把记录目标切到编辑器；
+  归还时按借出前记录的 `profileEditor` 原值还原（用户原来在看设备就还原成设备）；
+- 借出时**回读校验**：目标切不过去（写失败）会报一条一次性的警告，
+  否则用户只会拿到一份「只剩工程级审计」的报告，完全猜不到原因；
+- 自愈必须是 `RestartRecording(true)` —— **不能沿用出错前的值**，否则真凶原封不动留在原地（上一版就这么白救了一次）；
+- `NoFrameReason()` / `DescribeProfilerState()` / API 探针都单独列出「记录目标」这一项，
+  让「enabled=false」「目标不对」「两个都对却不写帧」三种 0 帧原因在日志里当场可分。
+
+> 这一条也解释了「为什么昨天能采到今天不能」：昨天是手动开 Play、Profiler 窗口开着；
+> 今天自动进 Play、窗口是关的。**同一个代码路径，环境不同，结论完全相反。**
 
 
 ### 10.8 工程级扫描必须按「当前场景目录」分组
@@ -586,6 +606,12 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
      ② 文字元素显式 `whiteSpace = WhiteSpace.NoWrap` + `textOverflow = TextOverflow.Ellipsis`；
      ③ 承载它的条 `overflow = Overflow.Hidden`。
      另外：**进度/状态文案要短**，长句永远会在 520px 里折叠（真正的原因放进 tooltip / Console）。
+   - **只给外层条设 `overflow: Hidden` 不够 —— 长文案会横向画出 `Label` 的矩形、直接压到右边的按钮上**
+     （用户截图里的「字叠在一起」就是这个：文字和「展开面板 / 停止采集」画在同一片像素）。
+     三件套必须都落在**标签自己**身上：`minWidth = 0`（允许被压得比内容窄）+ `flexShrink = 1` +
+     `overflow = Hidden` + `NoWrap` + `Ellipsis`；同时胶囊与按钮设 `flexShrink = 0` ——
+     窄的时候该省略的是文字，不是把按钮压没了。
+   - 细条上的诊断文案**只留短标记**（如「长时间 0 帧」），完整原因进 tooltip 与 Console。
 
 ### 11.9 对话历史体检（一次真事故）
 

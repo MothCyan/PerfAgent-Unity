@@ -108,6 +108,10 @@ namespace PerfAgent.UI
             sb.Append("Profiler 记录总开关 enabled = ").Append(ProfilerApi.EnabledRaw).Append('\n');
             sb.Append("Profiler profileEditor = ").Append(ProfilerApi.ProfileEditor)
               .Append("（true 时 Profiler 窗口会主动驱动帧写入）\n");
+            // 「记录目标」就是「会不会写帧」的总闸：目标不是编辑器时 enabled 开着也一帧不写（实测 2026-10-07）。
+            sb.Append("记录目标 = ").Append(ProfilerApi.ProfileEditor
+                ? "编辑器自身（会写帧）" : "不是编辑器 —— enabled 开着也不会写帧，采集必然 0 帧")
+              .Append('\n');
             sb.Append("合并读法 ProfilerApi.Enabled = ").Append(ProfilerApi.Enabled)
               .Append("（= enabled || profileEditor，仅供人看）\n");
             sb.Append("帧索引范围: ").Append(ProfilerApi.FirstFrameIndex).Append(" ~ ").Append(ProfilerApi.LastFrameIndex)

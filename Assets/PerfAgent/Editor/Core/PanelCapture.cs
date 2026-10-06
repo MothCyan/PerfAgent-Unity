@@ -96,10 +96,14 @@ namespace PerfAgent.Core
             _rebasedToRestart = false;
             CapturedCount = 0;
 
-            // 面板在记录，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
+            // 面板在记录、且记录目标就是编辑器，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
             // 以前在这里手写「开 / 关」，进 Play 时的域重载会把关掉那一步吃掉，
             // 结果编辑器一直逐帧记录，Profiler 帧数据把系统内存吃光。
-            ProfilerOwnership.Acquire(false);
+            //
+            // 这里传 true（切记录目标）是 2026-10-07 的实测结论：目标不是编辑器时
+            // enabled 开着也一帧不写（first/last 恒为 -1）—— 以前用户自己开着 Profiler 窗口，
+            // 窗口顺手把目标切好了，所以「不开目标」看起来能用；窗口一关就不行了。
+            ProfilerOwnership.Acquire(true);
 
             // 窗口从「现在之后的第一帧」开始（这里之后录进来的都是被测期间）
             startFrame = ProfilerApi.LastFrameIndex;
@@ -223,6 +227,7 @@ namespace PerfAgent.Core
         {
             return "Profiler 面板一帧都没录到（enabled=" + ProfilerApi.EnabledRaw
                 + "，profileEditor=" + ProfilerApi.ProfileEditor
+                + (ProfilerApi.ProfileEditor ? "（记录目标=编辑器）" : "（记录目标不是编辑器 → 这个状态下不会写任何帧）")
                 + "，historyLength=" + ProfilerApi.MaxHistoryLength
                 + "，firstFrameIndex=" + ProfilerApi.FirstFrameIndex
                 + "，lastFrameIndex=" + ProfilerApi.LastFrameIndex + "）";
@@ -263,7 +268,10 @@ namespace PerfAgent.Core
                     + " 秒，但 Profiler 一帧都没录到（enabled=" + ProfilerApi.EnabledRaw
                     + "，profileEditor=" + ProfilerApi.ProfileEditor
                     + "，historyLength=" + ProfilerApi.MaxHistoryLength + "）。"
-                    + "请到 Profiler 窗口确认 Record 是开着的（本工具会自动打开，但被手动暂停时不会自己恢复）；"
+                    + (ProfilerApi.ProfileEditor
+                        ? "记录目标已是编辑器，却仍不写帧：请检查 Profiler 窗口是不是处于暂停（Record 红点没亮）或系统内存告警导致 Unity 自己丢帧。"
+                        : "记录目标不是编辑器（profileEditor=false）—— 这个状态下 Play 也不会写帧。"
+                          + "请手动打开一次 Profiler 窗口（窗口会把目标切回编辑器），然后再开始采集。")
                     + "否则这次采集不会产出任何帧数据，报告里只剩工程级审计。");
             }
 
