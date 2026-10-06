@@ -74,6 +74,7 @@ namespace PerfAgent.RuleRegression
             FixSuggestionBriefTests.Register(tests);
             MessageHygieneTests.Register(tests);
             NumberVerifierTests.Register(tests);
+            MarkdownLiteTests.Register(tests);
 
             var failed = 0;
             foreach (var test in tests)

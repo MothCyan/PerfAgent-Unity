@@ -13,11 +13,13 @@
     <Compile Include="FixSuggestionBriefTests.cs" />
     <Compile Include="MessageHygieneTests.cs" />
     <Compile Include="NumberVerifierTests.cs" />
+    <Compile Include="MarkdownLiteTests.cs" />
     <Compile Include="../../Editor/Core/PerfModels.cs" Link="Source/PerfModels.cs" />
     <Compile Include="../../Editor/Core/FrameWaveform.cs" Link="Source/FrameWaveform.cs" />
     <Compile Include="../../Editor/Utils/EndpointUrl.cs" Link="Source/EndpointUrl.cs" />
     <Compile Include="../../Editor/Utils/MiniJson.cs" Link="Source/MiniJson.cs" />
     <Compile Include="../../Editor/Utils/MessageHygiene.cs" Link="Source/MessageHygiene.cs" />
+    <Compile Include="../../Editor/Utils/MarkdownLite.cs" Link="Source/MarkdownLite.cs" />
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
     <Compile Include="../../Editor/Core/PerfAgentSettings.cs" Link="Source/PerfAgentSettings.cs" />
     <Compile Include="../../Editor/Analysis/PerfRuleEngine.cs" Link="Source/PerfRuleEngine.cs" />

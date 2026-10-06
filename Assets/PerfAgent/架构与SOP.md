@@ -418,6 +418,11 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
   所以 `LocalAnswer.Answer(s, q, chatStyle: true)` 输出粗体小标题 + 列表版；
   需要 Markdown（报告 / 复制走的那份）时用默认的 `chatStyle: false`。
   模型原文（如 AI 修复清单）也不再倒进对话框，而是直接进剪贴板，只在对话里留一行「已复制 N 字」。
+- **模型输出的 Markdown 要降级**（`Utils/MarkdownLite.cs`，纯逻辑 + `MarkdownLiteTests`）：
+  模型的回答我们控制不了，它照样会写 `###`、`---`、`| 表 |`、三反引号围栏。
+  所以 `Theme.RichText` 改为委托 MarkdownLite：标题 → 粗体行；水平线 → 一行淡色横线；
+  表格 → 「列 · 列」（丢掉 `|---|` 分隔行）；代码围栏 → 删围栏、保留内容并缩进；
+  尖括号先转义（内容不能注入标签）。
 
 ### 11.8 两个 UI Toolkit 坑（都把人坑过，写了注释）
 

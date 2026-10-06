@@ -2,6 +2,7 @@ using System;
 using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.UIElements;
+using PerfAgent.Utils;
 
 namespace PerfAgent.UI
 {
@@ -110,15 +111,14 @@ namespace PerfAgent.UI
         /// Markdown → UI Toolkit 富文本。
         /// 面板里用 `**粗体**` 写的内容原来是**原样显示星号**的（很难看），这里做最小转换；
         /// 先转义再替换，避免内容里的 `&lt;` 被当成标签。
+        ///
+        /// 具体口径都在 <see cref="MarkdownLite"/>（不依赖 Unity，可离线回归）：标题、水平线、
+        /// 表格、代码围栏都会降级成 Label 撑得住的写法 —— 否则模型一用 Markdown，
+        /// 对话区就是一屏符号。
         /// </summary>
         public static string RichText(string markdown)
         {
-            if (string.IsNullOrEmpty(markdown)) return "";
-
-            string s = markdown.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
-            s = Regex.Replace(s, @"\*\*(.+?)\*\*", "<b>$1</b>");
-            s = Regex.Replace(s, @"`([^`]+)`", "<color=#9CDCFE>$1</color>");
-            return s;
+            return MarkdownLite.ToRichText(markdown);
         }
 
         // =====================================================================
