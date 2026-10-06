@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="UnityStubs.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="LocalAnswerTests.cs" />
     <Compile Include="../../Editor/Core/PerfModels.cs" Link="Source/PerfModels.cs" />
     <Compile Include="../../Editor/Core/FrameWaveform.cs" Link="Source/FrameWaveform.cs" />
     <Compile Include="../../Editor/Utils/EndpointUrl.cs" Link="Source/EndpointUrl.cs" />
@@ -16,6 +17,7 @@
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
     <Compile Include="../../Editor/Core/PerfAgentSettings.cs" Link="Source/PerfAgentSettings.cs" />
     <Compile Include="../../Editor/Analysis/PerfRuleEngine.cs" Link="Source/PerfRuleEngine.cs" />
+    <Compile Include="../../Editor/Analysis/LocalAnswer.cs" Link="Source/LocalAnswer.cs" />
     <Compile Include="../../Editor/Collectors/ProfilerColumnLayout.cs" Link="Source/ProfilerColumnLayout.cs" />
     <Compile Include="../../Editor/Analysis/PerfDiff.cs" Link="Source/PerfDiff.cs" />
     <Compile Include="../../Editor/Analysis/PerfFixPlan.cs" Link="Source/PerfFixPlan.cs" />

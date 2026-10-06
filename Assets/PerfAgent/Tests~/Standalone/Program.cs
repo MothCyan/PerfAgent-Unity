@@ -22,7 +22,7 @@ namespace PerfAgent.RuleRegression
 
         static int Main()
         {
-            var tests = new Action[]
+            var tests = new List<Action>
             {
                 GcAllocExplosion,
                 EditorOverheadIsNotReportedAsProjectProblem,
@@ -69,6 +69,9 @@ namespace PerfAgent.RuleRegression
                 WaveformChartCeilingNeverTinyAndClears
             };
 
+            // 本地规则引擎怎么回答提问（纯本地模式的那条路）单独一个文件，便于继续加用例
+            LocalAnswerTests.Register(tests);
+
             var failed = 0;
             foreach (var test in tests)
             {
@@ -84,7 +87,7 @@ namespace PerfAgent.RuleRegression
                 }
             }
 
-            Console.WriteLine("Result: " + (tests.Length - failed) + "/" + tests.Length + " passed");
+            Console.WriteLine("Result: " + (tests.Count - failed) + "/" + tests.Count + " passed");
             return failed == 0 ? 0 : 1;
         }
 

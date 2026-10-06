@@ -668,7 +668,7 @@ namespace PerfAgent.UI
 
         VisualElement BuildChatPanel()
         {
-            var card = Theme.Card("对话追问", "看不懂结论就在这里问；没配 Key 也能用（走本地规则引擎）");
+            var card = Theme.Card("对话追问", "看不懂结论就在这里问；纯本地模式按关键词找维度（不联网）");
             card.style.marginTop = 6;
             card.style.flexShrink = 0;   // 窗口矮的时候也不要压缩输入区
 
@@ -795,11 +795,19 @@ namespace PerfAgent.UI
             AppendTranscript("\n**我**：" + text + "\n\n**Agent**：");
             SetSending(true);
 
-            if (!PerfAgentSettings.Config.HasApiKey)
+            // 本地路线有两类情况，都得走规则引擎（LlmClient 里还有一道硬闸门兜底）：
+            //   纯本地模式：用户明确要求不联网
+            //   没配 Key：即便想联网也发不出去
+            // 以前只判断了「有没有 Key」—— 于是开了纯本地模式、但配过 Key（含环境变量）时，
+            // 请求会真的发出去，跟开关的承诺相反。
+            var cfg = PerfAgentSettings.Config;
+            if (cfg.localOnlyNoLlm || !cfg.HasApiKey)
             {
-                AppendTranscript(ScriptOnlyAnswer(text));
+                AppendTranscript(LocalAnswer.Answer(PerfSession.Current, text));
                 SetSending(false);
-                SetStatus("已用本地规则引擎回答（未配置 LLM）");
+                SetStatus(cfg.localOnlyNoLlm
+                    ? "已用本地规则引擎回答（纯本地模式，未联网）"
+                    : "已用本地规则引擎回答（未配置 LLM）");
                 SaveConversation();
                 return;
             }
@@ -885,28 +893,6 @@ namespace PerfAgent.UI
             if (_transcript != null) _transcript.text = "";
             AppendTranscript("**新会话已开始**\n\n上一会话已保存到 ProjectSettings/PerfAgent/Conversations。\n");
             SetStatus("已开启新会话");
-        }
-
-        /// <summary>没有配置 LLM 时的本地降级：直接输出规则引擎的结论。</summary>
-        string ScriptOnlyAnswer(string question)
-        {
-            var snap = PerfSession.Current;
-            if (snap == null) return "当前没有快照。请先点「跟随采集」（进 Play 自己操作），或从左上列表载入已有快照。\n";
-
-            var sb = new StringBuilder();
-            sb.Append("（未配置 LLM，以下为本地规则引擎结论，未使用任何外部服务。")
-              .Append("要启用对话追问，点右上角「LLM 配置」填入 API Key。）\n\n");
-            int count = 0;
-            for (int i = 0; i < snap.findings.Count && count < 8; i++)
-            {
-                var f = snap.findings[i];
-                if (f.severity == Severity.Info) continue;
-                sb.Append("- [").Append(f.severity.ToUpperInvariant()).Append("] ").Append(f.title).Append('\n');
-                sb.Append("  ").Append(f.recommendation).Append('\n');
-                count++;
-            }
-            if (count == 0) sb.Append("未发现超出预算的问题。\n");
-            return sb.ToString();
         }
 
         string SummarizeForChat(PerfSnapshot snap)

@@ -29,6 +29,20 @@ namespace PerfAgent.Agent
             Action<string> onError)
         {
             var cfg = PerfAgentSettings.Config;
+
+            // 纯本地模式是**硬闸门**，挡在所有调用方（面板对话 / Agent 循环 / 任何以后的接入）前面。
+            //
+            // 之前这里只有「有没有 Key」一道判断，于是「开了纯本地模式 + 配过 Key（含环境变量，
+            // 如 DEEPSEEK_API_KEY）」仍然会真的发请求 —— 那等于承诺了不联网却联了。
+            // 隐私开关必须在能发字节的那一层生效，不能只活在 UI 文案里。
+            if (cfg.localOnlyNoLlm)
+            {
+                onError("当前是「纯本地模式」：不会向任何外部服务发送请求。"
+                        + "要用 LLM 请先在「LLM 配置」（或主面板右上角）关掉它。"
+                        + "本地模式下的提问会由规则引擎按维度回答。");
+                return;
+            }
+
             if (string.IsNullOrEmpty(cfg.endpoint))
             {
                 onError("未配置 LLM Endpoint。请在「Tools > PerfAgent > LLM 配置」中填写。");
@@ -61,6 +75,15 @@ namespace PerfAgent.Agent
             Action<Dictionary<string, object>> onMessage, Action<string> onError)
         {
             var cfg = PerfAgentSettings.Config;
+
+            // 再挡一次：Send 里已经拦过，但这是真正建请求的地方，
+            // 以后要是有人直接调 SendRaw（流式重试、批量请求之类），也不应该能绕开纯本地模式。
+            if (cfg.localOnlyNoLlm)
+            {
+                onError("当前是「纯本地模式」：不会向任何外部服务发送请求。");
+                return;
+            }
+
             Busy = true;
 
             var handler = new SseHandler(onDelta);
