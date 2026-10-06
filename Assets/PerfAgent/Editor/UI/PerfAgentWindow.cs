@@ -133,22 +133,20 @@ namespace PerfAgent.UI
         /// </summary>
         static readonly Vector2 PanelDefaultSize = new Vector2(900f, 600f);
 
-        /// <summary>把窗口恢复到够用的尺寸：不低于 <see cref="PanelDefaultSize"/>，位置不变。</summary>
+        /// <summary>把窗口恢复到够用的尺寸：不低于 <see cref="PanelDefaultSize"/>，位置不变（推迟到下一帧）。</summary>
         void RestoreComfortableSize(string why)
         {
-            try
-            {
-                var p = position;
-                float w = Mathf.Max(p.width, PanelDefaultSize.x);
-                float h = Mathf.Max(p.height, PanelDefaultSize.y);
-                if (Mathf.Abs(w - p.width) < 1f && Mathf.Abs(h - p.height) < 1f) return;
+            var p = position;
+            float w = Mathf.Max(p.width, PanelDefaultSize.x);
+            float h = Mathf.Max(p.height, PanelDefaultSize.y);
+            if (Mathf.Abs(w - p.width) < 1f && Mathf.Abs(h - p.height) < 1f) return;
 
-                position = new Rect(p.x, p.y, w, h);
+            SetWindowRectDeferred(new Rect(p.x, p.y, w, h), delegate (Rect after)
+            {
                 UnityEngine.Debug.Log("[PerfAgent] " + why + "：把面板尺寸恢复到 "
-                    + w.ToString("0") + "x" + h.ToString("0") + "（原 "
+                    + after.width.ToString("0") + "x" + after.height.ToString("0") + "（原 "
                     + p.width.ToString("0") + "x" + p.height.ToString("0") + "）。");
-            }
-            catch { }
+            });
         }
 
         [MenuItem(MenuRoot + "打开性能诊断面板 %#p", false, 100)]
@@ -156,9 +154,9 @@ namespace PerfAgent.UI
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
             window.minSize = PanelMinSize;
-            // 打开时抬到面板最初的尺寸（900x600）：只抬不压 —— 你拖得更大就保留你的。
-            window.RestoreComfortableSize("打开性能诊断面板");
             window.Show();
+            // 打开时抬到面板最初的尺寸（900x600）：只抬不压，而且要等窗口安顿好再写（见 SetWindowRectDeferred）。
+            window.RestoreComfortableSize("打开性能诊断面板");
         }
 
         [MenuItem(MenuRoot + "静态审计（不抓帧）", false, 102)]
@@ -402,7 +400,8 @@ namespace PerfAgent.UI
             _compactBar.style.display = DisplayStyle.None;
             root.Add(_compactBar);
 
-            RestoreIfLeftCompact();
+            // 纠正「上次留在小窗口状态」的事必须等窗口安顿下来再做（见 SetWindowRectDeferred）
+            EditorApplication.delayCall += delegate { RestoreIfLeftCompact(); };
         }
 
         /// <summary>
@@ -438,12 +437,15 @@ namespace PerfAgent.UI
                 }
 
                 var p = position;
-                position = new Rect(p.x, p.y,
+                _preCompactRect = new Rect(p.x, p.y,
                     Mathf.Max(p.width, _preCompactRect.width),
                     Mathf.Max(p.height, _preCompactRect.height));
                 try { SessionState.EraseString(PreCompactRectKey); } catch { }
-                UnityEngine.Debug.Log("[PerfAgent] 上次是在小窗口状态下退出/重载的（窗口布局是持久的），"
-                    + "已把面板恢复成 " + position.width.ToString("0") + "x" + position.height.ToString("0") + "。");
+                SetWindowRectDeferred(_preCompactRect, delegate (Rect after)
+                {
+                    UnityEngine.Debug.Log("[PerfAgent] 上次是在小窗口状态下退出/重载的（窗口布局是持久的），"
+                        + "已把面板恢复成 " + after.width.ToString("0") + "x" + after.height.ToString("0") + "。");
+                });
                 RestoreComfortableSize("上次留在小窗口状态");
             }
             catch { }
@@ -729,17 +731,35 @@ namespace PerfAgent.UI
             RefreshCompactText();
         }
 
+        /// <summary>
+        /// **所有写窗口尺寸的地方都走这里**，并且推迟到下一帧再写。
+        ///
+        /// 为什么必须推迟（一次实测报错）：在窗口刚被创建 / 正在被 Dock 的那一刻直接写 position，
+        /// Unity 会去走它的 Dock 逻辑，而那条路上会抛
+        /// <c>NullReferenceException @ UnityEditor.HostView.RegisterSelectedPane
+        ///  ← DockArea.AddTab ← DockArea.SetSelectedPrivate</c> ——
+        /// 整条栈里没有我们的代码，但**诱因是我们选错了时机**。推迟到下一帧，窗口已经安顿下来，
+        /// 这时写尺寸才是安全的。
+        /// </summary>
+        void SetWindowRectDeferred(Rect rect, Action<Rect> onApplied)
+        {
+            EditorApplication.delayCall += delegate
+            {
+                try { position = rect; } catch { }
+                try { if (onApplied != null) onApplied(position); } catch { }
+            };
+        }
+
         void ApplyCompactRect()
         {
-            try
-            {
-                var from = _preCompactRect.width > 1f ? _preCompactRect : position;
-                float x = from.x + Mathf.Max(0f, (from.width - CompactWindowGeometry.Width) * 0.5f);
-                position = new Rect(x, from.y, CompactWindowGeometry.Width, CompactWindowGeometry.Height);
+            var from = _preCompactRect.width > 1f ? _preCompactRect : position;
+            float x = from.x + Mathf.Max(0f, (from.width - CompactWindowGeometry.Width) * 0.5f);
+            var want = new Rect(x, from.y, CompactWindowGeometry.Width, CompactWindowGeometry.Height);
 
+            SetWindowRectDeferred(want, delegate (Rect after)
+            {
                 // 停靠窗口写 position 不生效（尺寸由布局管）—— 读回来对不上就如实说出来，
                 // 并留一条 Console（下次再出现「缩不了/没高度」时，这行日志能直接定位原因）。
-                var after = position;
                 _compactPositionOk = Mathf.Abs(after.width - CompactWindowGeometry.Width) < 2f
                                      && Mathf.Abs(after.height - CompactWindowGeometry.Height) < 2f;
                 if (!_compactPositionOk)
@@ -749,17 +769,14 @@ namespace PerfAgent.UI
                         + "，实际读回 " + after.width.ToString("0") + "x" + after.height.ToString("0")
                         + "。停靠窗口的尺寸由 Unity 布局管（写 position 无效）—— 把它拖成浮动窗口才会真缩成一行。");
                 }
-            }
-            catch { _compactPositionOk = false; }
+                RefreshCompactText();
+            });
         }
 
         void RestorePanelRect()
         {
-            try
-            {
-                if (_preCompactRect.width > 1f && _preCompactRect.height > 1f) position = _preCompactRect;
-            }
-            catch { }
+            if (_preCompactRect.width > 1f && _preCompactRect.height > 1f)
+                SetWindowRectDeferred(_preCompactRect, null);
         }
 
         static void SavePreCompactRect(Rect r)
