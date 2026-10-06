@@ -149,8 +149,8 @@ namespace PerfAgent.Agent
             for (int i = 0; i < HardRules.Length; i++)
                 sb.Append("- ").Append(HardRules[i]).Append('\n');
 
-            sb.Append("\n采集环节只能**引导用户**去做（让他在面板点「跟随采集」后自己进 Play 操作），"
-                    + "你没有替他进 Play 的工具。\n");
+            sb.Append("\n采集环节只能**引导用户**去做：让他在面板点「跟随采集」—— 工具会量一次基线、"
+                    + "自动进入 Play 并开始记录，用户只管玩。你自己没有进 Play 的工具。\n");
             sb.Append("任何需要改工程的动作，必须停在「S5 等人工同意」，"
                     + "把动作清单（目标 / 影响面 / 风险 / 回滚）列清楚后交给用户点确认。\n");
 

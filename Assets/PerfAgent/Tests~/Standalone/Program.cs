@@ -84,6 +84,7 @@ namespace PerfAgent.RuleRegression
             MarkdownLiteTests.Register(tests);
             ScriptScopeTests.Register(tests);
             CaptureWindowTests.Register(tests);
+            AutoPlayGateTests.Register(tests);
 
             var failed = 0;
             foreach (var test in tests)

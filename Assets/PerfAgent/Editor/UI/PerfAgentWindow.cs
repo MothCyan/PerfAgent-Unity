@@ -122,11 +122,10 @@ namespace PerfAgent.UI
         }
 
         /// <summary>
-        /// 跟随采集：**你自己进 Play 操作，工具在旁边记录**，时长不限。
+        /// 跟随采集：**你先按一下，工具负责进 Play 并记录**，你只管玩，时长不限。
         ///
         /// 按钮行为随状态变：
-        ///   未开始 → 进入待命（下一次进 Play 自动开始记录）
-        ///   待命中 → 取消
+        ///   未开始 → 量基线后自动进 Play 并开始记录（待命期间再点一次 = 取消）
         ///   采集中 → 结束并立即出快照（不会退出 Play，你可以接着玩）
         /// </summary>
         [MenuItem(MenuRoot + "跟随采集（自己操作，时长不限）", false, 105)]
@@ -189,7 +188,10 @@ namespace PerfAgent.UI
 
             SetStatus(EditorApplication.isPlaying
                 ? "跟随采集已开始 —— 你继续操作，想结束时再点一次这个按钮（或直接退出 Play）。"
-                : "跟随采集已待命 —— 现在进入 Play 就会自动开始记录，时长不限。");
+                : (PerfAgentSettings.Config.autoPlayOnFollowCapture
+                    ? "跟随采集已待命：正在量编辑器开销基线（约 1~4 秒，只能在编辑模式量），随后**自动进入 Play** 开始记录 —— "
+                      + "玩 5~10 秒后退出 Play 即自动结束并出结论。（不想自动进 Play：设置里关掉「点采集后自动进入 Play」）"
+                    : "跟随采集已待命 —— 现在进入 Play 就会自动开始记录，时长不限（自动进 Play 已在设置里关掉）。"));
         }
 
         void OnEnable()
@@ -352,10 +354,11 @@ namespace PerfAgent.UI
             RefreshSnapshots();
             RefreshDetails();
             RefreshLlmStatus();
-            AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**自己进 Play 操作**（战斗、开背包、切界面都算），"
-                + "面板会**自动收成一条只显示帧率的细条**，不会挡住 Game 视图；结束时再点一次「停止采集」或直接退出 Play，"
-                + "数据会自动分析、面板自动展开。\n"
-                + "想一边看波形一边操作，点细条上的「展开面板」（或菜单 `Tools/PerfAgent/面板：收起为细条 / 展开`）就行。\n"
+            AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**工具会自动量一次基线并替你进入 Play**，"
+                + "你只管操作（战斗、开背包、切界面都算）；面板会**自动收成一条只显示帧率的细条**，不会挡住 Game 视图。\n"
+                + "玩 5~10 秒后**退出 Play**（或点细条上的「停止采集」）即自动结束、面板自动展开。\n"
+                + "想一边看波形一边操作，点细条上的「展开面板」（或菜单 `Tools/PerfAgent/面板：收起为细条 / 展开`）就行；"
+                + "不想让工具替你按 Play，就在设置里关掉「点采集后自动进入 Play」。\n"
                 + "然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n"
                 + "\n要贴给别人（或丢给外部 AI 继续追问），点工具栏「复制结论」。\n");
             RestoreLatestConversation();
@@ -502,7 +505,7 @@ namespace PerfAgent.UI
                 if (_nextFollowPoll <= 0)   // OnFollowCaptureChanged 会把它清零 → 只在状态变化时刷一次
                 {
                     _nextFollowPoll = 1;
-                    SetStatus("跟随采集已待命：进入 Play 模式后会自动开始记录。点「跟随采集」可取消。");
+                    SetStatus("跟随采集已待命：正在量编辑器开销基线，随后会自动进入 Play 开始记录。点「跟随采集」可取消。");
                 }
                 return;
             }
@@ -1499,7 +1502,7 @@ namespace PerfAgent.UI
             if (snap == null)
             {
                 _detailHost.Add(Theme.EmptyState("◎", "还没有数据",
-                    "点「跟随采集」后**自己进 Play 操作**（战斗、开背包、切界面都算），结束时再点一次就会出结论；\n也可以从左上列表载入历史快照，或先跑一次「静态审计」（秒级、不需要进 Play）。",
+                    "点「跟随采集」后**工具会自动量基线并进入 Play**，你只管操作（战斗、开背包、切界面都算）；玩几秒后退出 Play 就会出结论；\n也可以从左上列表载入历史快照，或先跑一次「静态审计」（秒级、不需要进 Play）。",
                     "跟随采集", ToggleFollowCapture));
                 return;
             }
@@ -2034,7 +2037,7 @@ namespace PerfAgent.UI
             if (snap.frames.Count == 0)
             {
                 _detailHost.Add(Theme.EmptyState("—", "没有帧数据",
-                    "这份快照只做了静态审计（资源 / 场景 / 代码），不含运行时帧。\n点「跟随采集」自己进 Play 跑一段即可拿到帧数据。"));
+                    "这份快照只做了静态审计（资源 / 场景 / 代码），不含运行时帧。\n点「跟随采集」—— 工具会自动进 Play 并录一段。"));
                 return;
             }
 

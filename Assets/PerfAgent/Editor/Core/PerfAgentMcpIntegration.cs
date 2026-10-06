@@ -327,7 +327,7 @@ namespace PerfAgent.Core
                 sb.Append("暴露的工具（全部只读或触发分析，没有执行修复的入口）：\n");
                 sb.Append("  perf_list_snapshots   列快照\n");
                 sb.Append("  perf_static_audit     静态审计（秒级）\n");
-                sb.Append("  perf_follow_capture_start   进入跟随采集待命（你自己进 Play 操作）\n");
+                sb.Append("  perf_follow_capture_start   进入跟随采集待命（面板按钮会自动量基线并进 Play；MCP 侧不会替你进 Play）\n");
                 sb.Append("  perf_follow_capture_status  查跟随采集进度\n");
                 sb.Append("  perf_follow_capture_stop    结束采集并出快照\n");
                 sb.Append("  perf_get_findings     取结论 + 证据链\n");

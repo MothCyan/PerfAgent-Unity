@@ -276,6 +276,25 @@ namespace PerfAgent.UI
             privacyCard.Add(Theme.Hint("关闭「允许上传代码片段」后，Agent 只能看到反模式名称与文件:行号，看不到源码内容。"));
             scroll.Add(privacyCard);
 
+            // ---- 采集 ----
+            var captureCard = Theme.Card("采集", "点一下就把活儿干完，少一步手动操作");
+
+            var autoPlay = new Toggle("点「跟随采集」后自动进入 Play");
+            autoPlay.value = cfg.autoPlayOnFollowCapture;
+            autoPlay.style.fontSize = Theme.SizeSmall;
+            autoPlay.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { cfg.autoPlayOnFollowCapture = e.newValue; });
+            captureCard.Add(autoPlay);
+
+            var autoAnalyze = new Toggle("采集结束后自动分析（出结论）");
+            autoAnalyze.value = cfg.autoAnalyzeAfterCapture;
+            autoAnalyze.style.fontSize = Theme.SizeSmall;
+            autoAnalyze.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { cfg.autoAnalyzeAfterCapture = e.newValue; });
+            captureCard.Add(autoAnalyze);
+
+            captureCard.Add(Theme.Hint("自动进 Play 之前会先量一次「编辑器开销基线」（约 1~4 秒，只能在编辑模式量）；"
+                + "量完替你按 Play 并开始记录。想先做好准备再手动进 Play，就把第一个开关关掉。"));
+            scroll.Add(captureCard);
+
             // ---- 操作 ----
             var actionCard = Theme.Card("操作");
             var actions = new VisualElement();

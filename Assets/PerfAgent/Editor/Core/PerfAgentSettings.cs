@@ -105,6 +105,16 @@ namespace PerfAgent.Core
         [Header("其他")]
         public bool autoAnalyzeAfterCapture = true;
 
+        [Header("采集")]
+        /// <summary>
+        /// 点「跟随采集」后自动进入 Play 模式（默认开）。
+        ///
+        /// 以前是「点一下→待命，用户自己按 Play」。实测里这步很容易被漏掉（或者按了却以为已经在记），
+        /// 于是一整轮操作下来一帧都没采到。默认替用户按一次 Play ——
+        /// 想先做好准备、手动进 Play 的，在设置里关掉它即可。
+        /// </summary>
+        public bool autoPlayOnFollowCapture = true;
+
         internal const string ApiKeyPref = "PerfAgent.ApiKey";
 
         /// <summary>本插件专用的环境变量名。</summary>

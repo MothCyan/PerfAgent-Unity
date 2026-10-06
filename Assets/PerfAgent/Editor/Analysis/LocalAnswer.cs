@@ -169,7 +169,7 @@ namespace PerfAgent.Analysis
         public static string Answer(PerfSnapshot s, string question, bool chatStyle)
         {
             if (s == null)
-                return "当前没有快照：先点「跟随采集」（自己进 Play 操作），或从左上列表载入一份历史快照。\n";
+                return "当前没有快照：先点「跟随采集」（工具会量基线并自动进 Play，你只管玩几秒），或从左上列表载入一份历史快照。\n";
 
             var hits = new List<Dimension>();
             Match(question, hits);

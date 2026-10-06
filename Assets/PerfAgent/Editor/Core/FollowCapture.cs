@@ -4,6 +4,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using PerfAgent.Collectors;
+using PerfAgent.Utils;
 
 namespace PerfAgent.Core
 {
@@ -15,11 +16,15 @@ namespace PerfAgent.Core
     ///     采到的是真实操作过程 —— 战斗、开背包、切界面、加载，全是真实发生的行为，
     ///     而不是脚本模拟出来的。脚本永远演不出「玩家的操作节奏」。
     ///
-    /// 核心设计：**不控制 Play 模式**。只做两件事：
-    ///   1. 你进入 Play 时自动开始采集 —— 否则等你玩起来之后再手忙脚乱点一次，
-    ///      开头那段（往往是加载 + 初始化，最有价值）就漏掉了；
-    ///   2. 你退出 Play 时自动收尾出快照 —— 那时候人已经玩完了。
-    /// 中途也可以随时手动停止（推荐这样：在 Play 里点停止，采集器能拿到完整的资源数据）。
+    /// 核心设计：**只在用户按下采集时动一次 Play**。具体三件事：
+    ///   1. 用户点「跟随采集」后，先量一次编辑器开销基线（只能在编辑模式量），
+    ///      然后**替你按一次 Play** 并开始采集（不想让它代劳就在设置里关掉）——
+    ///      实测里「点完采集忘了按 Play」是白采一整轮的高频原因；
+    ///   2. 退出 Play 时自动收尾出快照 —— 那时人已经玩完了；
+    ///   3. 中途也可以随时手动停止（推荐这样：在 Play 里点停止，采集器能拿到完整的资源数据）。
+    ///
+    /// 边界：**只有人类按钮会进 Play**。MCP / Agent 侧没有任何进 Play 的入口
+    ///（见 `SopDefinition.HardRules`），所以外部模型仍然不能自己跑一次采集。
     ///
     /// 为什么收尾必须在 ExitingPlayMode 那一帧同步做完：退出 Play 会销毁域，
     /// 所有静态状态连同帧缓冲一起消失，之后再想保存就没数据了。
@@ -86,15 +91,35 @@ namespace PerfAgent.Core
 
             // 趁现在还在编辑模式，量一次「编辑器空闲开销基线」。
             // 不量的话，「每帧托管分配」里编辑器自身的开销会被当项目的分配
-            //（一个空工程也能报出上百 KB/帧）；而一旦进了 Play 就再也测不准了。
-            // 测量约 0.4 秒，不阻塞 —— 用户点完按钮再进 Play 通常远不止这么久。
-            EditorOverheadBaseline.Measure(null);
+            //（一个空工程也能报出上百 KB/帧）；而一旦进了 Play 就再也测不准了 ——
+            // 所以「自动进 Play」必须等它量完（回调里再按 Play，见 TryAutoEnterPlay）。
+            EditorOverheadBaseline.Measure(delegate { TryAutoEnterPlay(); });
 
             // 已经在 Play 里的话立刻开始 —— 不让用户为了开始采集先退出再重进一次
             if (EditorApplication.isPlaying) BeginCapture();
 
             Notify();
             return true;
+        }
+
+        /// <summary>
+        /// 基线量完后自动进 Play —— 用户点「跟随采集」就不必再自己按一次。
+        ///
+        /// 实测里「点完采集忘了按 Play」是白采一整轮的高频原因。判定放在
+        /// <see cref="PerfAgent.Utils.AutoPlayGate"/>（纯逻辑、有离线回归）：
+        /// 设置里关掉、期间被取消、已经在 Play / 正在切换 —— 一律不动手。
+        /// </summary>
+        static void TryAutoEnterPlay()
+        {
+            bool allowed = true;
+            try { allowed = PerfAgentSettings.Config.autoPlayOnFollowCapture; }
+            catch { }
+
+            if (!AutoPlayGate.ShouldEnterPlay(_armed, allowed,
+                    EditorApplication.isPlaying, EditorApplication.isPlayingOrWillChangePlaymode)) return;
+
+            Debug.Log("[PerfAgent] 编辑器开销基线已量好，自动进入 Play 开始采集（可在 PerfAgent 设置里关掉「点采集后自动进入 Play」）。");
+            EditorApplication.isPlaying = true;
         }
 
         /// <summary>

@@ -434,7 +434,8 @@ namespace PerfAgent.Agent
             sb.Append("  · 周期性卡顿尖峰 → get_frames 对比尖峰帧与普通帧，重点看分配量与 GC\n");
             sb.Append("  · 内存高 → get_metrics + get_asset_issues（纹理通常是最大头）\n");
             sb.Append("  · 每帧有分配 → get_code_issues 定位到具体文件与行\n");
-            sb.Append("- 如果还没有快照，先用 list_snapshots 看已有快照，再 load_snapshot 载入；确实需要新数据时请让用户点「跟随采集」并自己进 Play 操作。\n");
+            sb.Append("- 如果还没有快照，先用 list_snapshots 看已有快照，再 load_snapshot 载入；确实需要新数据时请让用户点「跟随采集」"
+                      + "（面板会自动进 Play 并开始记录，用户只管玩几秒后退出 Play）。\n");
             sb.Append("- 结论要按「收益/成本」排序，优先给出改动小、收益大的项。\n\n");
 
             sb.Append("## 输出格式\n");

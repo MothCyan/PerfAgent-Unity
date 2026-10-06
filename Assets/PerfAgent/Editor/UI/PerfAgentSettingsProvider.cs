@@ -79,6 +79,8 @@ namespace PerfAgent.UI
             EditorGUILayout.LabelField("其他", EditorStyles.boldLabel);
             EditorGUI.indentLevel++;
             cfg.autoAnalyzeAfterCapture = EditorGUILayout.Toggle("抓帧后自动分析", cfg.autoAnalyzeAfterCapture);
+            cfg.autoPlayOnFollowCapture = EditorGUILayout.Toggle("点「跟随采集」后自动进入 Play", cfg.autoPlayOnFollowCapture);
+            EditorGUILayout.LabelField(" ", "自动进 Play 会先量一次编辑器开销基线（约 1~4 秒），然后替你按 Play。", EditorStyles.miniLabel);
             EditorGUI.indentLevel--;
 
             EditorGUILayout.Space(12);

@@ -16,6 +16,7 @@
     <Compile Include="MarkdownLiteTests.cs" />
     <Compile Include="ScriptScopeTests.cs" />
     <Compile Include="CaptureWindowTests.cs" />
+    <Compile Include="AutoPlayGateTests.cs" />
     <Compile Include="../../Editor/Core/PerfModels.cs" Link="Source/PerfModels.cs" />
     <Compile Include="../../Editor/Core/FrameWaveform.cs" Link="Source/FrameWaveform.cs" />
     <Compile Include="../../Editor/Core/CaptureLiveStats.cs" Link="Source/CaptureLiveStats.cs" />
@@ -24,6 +25,7 @@
     <Compile Include="../../Editor/Utils/MessageHygiene.cs" Link="Source/MessageHygiene.cs" />
     <Compile Include="../../Editor/Utils/MarkdownLite.cs" Link="Source/MarkdownLite.cs" />
     <Compile Include="../../Editor/Utils/ScriptScope.cs" Link="Source/ScriptScope.cs" />
+    <Compile Include="../../Editor/Utils/AutoPlayGate.cs" Link="Source/AutoPlayGate.cs" />
     <Compile Include="../../Editor/Utils/StripGeometry.cs" Link="Source/StripGeometry.cs" />
     <Compile Include="../../Editor/Utils/CaptureWindow.cs" Link="Source/CaptureWindow.cs" />
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
