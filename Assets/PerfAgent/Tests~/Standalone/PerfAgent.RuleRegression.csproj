@@ -19,6 +19,7 @@
     <Compile Include="AutoPlayGateTests.cs" />
     <Compile Include="RecordingTargetLadderTests.cs" />
     <Compile Include="CopyFeedbackTests.cs" />
+    <Compile Include="CompactWindowGeometryTests.cs" />
     <Compile Include="../../Editor/Core/PerfModels.cs" Link="Source/PerfModels.cs" />
     <Compile Include="../../Editor/Core/FrameWaveform.cs" Link="Source/FrameWaveform.cs" />
     <Compile Include="../../Editor/Core/CaptureLiveStats.cs" Link="Source/CaptureLiveStats.cs" />
@@ -31,6 +32,7 @@
     <Compile Include="../../Editor/Utils/CaptureWindow.cs" Link="Source/CaptureWindow.cs" />
     <Compile Include="../../Editor/Utils/RecordingTargetLadder.cs" Link="Source/RecordingTargetLadder.cs" />
     <Compile Include="../../Editor/Utils/CopyFeedback.cs" Link="Source/CopyFeedback.cs" />
+    <Compile Include="../../Editor/Utils/CompactWindowGeometry.cs" Link="Source/CompactWindowGeometry.cs" />
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
     <Compile Include="../../Editor/Core/PerfAgentSettings.cs" Link="Source/PerfAgentSettings.cs" />
     <Compile Include="../../Editor/Analysis/PerfRuleEngine.cs" Link="Source/PerfRuleEngine.cs" />

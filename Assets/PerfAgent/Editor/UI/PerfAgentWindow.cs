@@ -49,13 +49,33 @@ namespace PerfAgent.UI
 
         // ---- 采集期间的实时监视 ----
         //
-        // 面板里那一条「● 采集监视中 帧率 / 帧耗时 / 已记录 N 帧」就是全部实时反馈（见 RefreshLiveStrip）。
-        // 早期版本在采集时会把整个面板**收成一条细条**（并改窗口尺寸），已按用户要求删除：
-        // 收起/展开本身会动窗口与布局，属于工具擅自控制编辑器外观。
+        // 面板里那一条「● 采集监视中 帧率 / 帧耗时 / 已记录 N 帧」是全部实时反馈（见 RefreshLiveStrip）。
         /// <summary>连续「0 帧」的起点（EditorApplication.timeSinceStartup）；0 = 当前没在数。</summary>
         double _zeroFramesSince;
         /// <summary>本次采集是否已经报过「一直没帧」的详细诊断（只报一次，不刷屏）。</summary>
         bool _warnedZeroFramesLive;
+
+        // ---- 采集期间的「小窗口」模式 ----
+        //
+        // 用户要求（2026-10-07）：「跟随采集要变成小窗口」—— 面板常常贴在 Game 视图旁边，
+        // 整块面板会挡掉画面。所以跟随采集一开始就把窗口缩成一行（帧率 + 帧耗时 + 已记录帧数 +
+        // 展开/停止两个按钮），采集结束再恢复原尺寸。
+        //
+        // 这套逻辑之前删过一次（当时它把面板搞成一条拉不回来的横线），现在按原意重做并堵上坑：
+        //   ① 原尺寸存 SessionState（进 Play 的域重载会清空静态字段）；
+        //   ② 「看起来就是小窗口」的尺寸不能当原尺寸存下来；
+        //   ③ 恢复永远有兜底（拿不到就用面板默认尺寸），绝不会恢复成 0x0 或一条横线。
+        VisualElement _compactBar;
+        Label _compactLabel;
+        bool _compact;
+        Rect _preCompactRect;
+        Vector2 _preCompactMinSize;
+        Vector4 _preCompactPadding;
+        /// <summary>本次采集已经自动缩过一次 —— 用户手动展开后不再自动缩回去。</summary>
+        bool _compactDoneForThisCapture;
+        /// <summary>小窗口的尺寸是否真的写进去了（停靠窗口写 position 无效，要在小窗口上说明）。</summary>
+        bool _compactPositionOk = true;
+        const string PreCompactRectKey = "PerfAgent.UI.PreCompactRect";
 
         /// <summary>会话的原始 Markdown；显示时统一转成富文本（否则 `**粗体**` 会原样显示星号）。</summary>
         readonly StringBuilder _transcriptRaw = new StringBuilder();
@@ -335,12 +355,19 @@ namespace PerfAgent.UI
             RefreshDetails();
             RefreshLlmStatus();
             AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**工具会自动量一次基线并替你进入 Play**，"
-                + "你只管操作（战斗、开背包、切界面都算）；面板里的「● 采集监视中」会实时显示帧率与帧耗时。\n"
-                + "玩 5~10 秒后**退出 Play**（或点工具栏「停止采集」）即自动结束并出结论。\n"
+                + "你只管操作（战斗、开背包、切界面都算）；面板会**自动缩成一行小窗口**（帧率 + 帧耗时），不挡 Game 视图。\n"
+                + "玩 5~10 秒后**退出 Play**（或点小窗口上的「停止采集」）即自动结束、面板自动恢复原尺寸。\n"
+                + "想一边看波形一边操作，点小窗口上的「展开面板」（或菜单 `Tools/PerfAgent/面板：缩成小窗口 / 展开`）就行；\n"
                 + "不想让工具替你按 Play，就在设置里关掉「点采集后自动进入 Play」。\n"
                 + "然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n"
                 + "\n要贴给别人（或丢给外部 AI 继续追问），点工具栏「复制结论」。\n");
             RestoreLatestConversation();
+
+            // 小窗口那一行：一直待在根上、默认隐藏（见 SetCompact）。
+            // 放在最后是因为 SetCompact 要遍历根节点的子元素。
+            _compactBar = BuildCompactBar();
+            _compactBar.style.display = DisplayStyle.None;
+            root.Add(_compactBar);
         }
 
         /// <summary>刷新 LLM 状态条。读的是真实配置，所以状态不会与实际行为脱节。</summary>
@@ -419,6 +446,16 @@ namespace PerfAgent.UI
         {
             if (FollowCapture.Capturing)
             {
+                // 采集一开始就缩成小窗口（面板常常就飘在 Game 视图旁边，整块面板会挡掉一半画面）。
+                // 只自动缩一次 —— 用户手动点过「展开面板」之后就不再干涉。
+                if (!_compactDoneForThisCapture)
+                {
+                    _compactDoneForThisCapture = true;
+                    _warnedZeroFramesLive = false;   // 新一轮采集重新允许报一次「没采到帧」
+                    _zeroFramesSince = 0;
+                    SetCompact(true, true);
+                }
+
                 double now = EditorApplication.timeSinceStartup;
                 if (now < _nextFollowPoll) return;
 
@@ -430,13 +467,12 @@ namespace PerfAgent.UI
                 {
                     // 采集刚开：把波形起点对齐到这次采集的起点（面板帧号 − 已记录帧数）
                     _liveActive = true;
-                    _warnedZeroFramesLive = false;   // 新一轮采集重新允许报一次「没采到帧」
-                    _zeroFramesSince = 0;
                     _live.Begin(ProfilerApi.LastFrameIndex - frames, now);
                 }
 
                 _live.Sample(ProfilerApi.LastFrameIndex, now);
                 RefreshLiveStrip(true);
+                RefreshCompactText();    // 小窗口上那一行（同一份样本、同一口径）
 
                 // 「持续 0 帧」是最难自查的一种状态：采集在跑、数字不动，用户分不清是工具坏了还是 Profiler 没录。
                 // 采集层也会报（带记录目标阶梯的结论），这里补一条窗口侧诊断。
@@ -467,6 +503,9 @@ namespace PerfAgent.UI
                 // 从「采集中」变为「已结束」：冻结波形（保留最后一段曲线），并补一次终态提示
                 _liveActive = false;
                 _lastFollowFrames = -1;
+                _compactDoneForThisCapture = false;
+                // 结束了就恢复原尺寸 —— 缩着的时候屏幕上只有一行帧率，结论得让用户看得见。
+                if (_compact) SetCompact(false, true);
                 RefreshLiveStrip(false);
 
                 SetStatus(string.IsNullOrEmpty(FollowCapture.LastSnapshotId)
@@ -491,6 +530,215 @@ namespace PerfAgent.UI
                 _nextFollowPoll = 1;
                 SetStatus("跟随采集已结束，快照 " + FollowCapture.LastSnapshotId + " 已生成。");
             }
+        }
+
+        // =====================================================================
+        // 小窗口模式（跟随采集时别遮挡视线）
+        //
+        // 用户要求：「跟随采集要变成小窗口」。它接管两件事：根元素的显示切换 + 窗口尺寸。
+        // 尺寸这件事踩过坑（面板曾经卡成一条拉不回来的横线），所以规矩定死：
+        //   - 原尺寸存 SessionState（跨域重载有效）；
+        //   - 「看起来就是小窗口」的尺寸不存（否则恢复出来还是小窗口）；
+        //   - 恢复永远有兜底，拿不到就用面板默认尺寸。
+        // =====================================================================
+
+        /// <summary>小窗口那一行：一行数字 + 展开/停止两个按钮。</summary>
+        VisualElement BuildCompactBar()
+        {
+            var bar = new VisualElement();
+            bar.style.flexDirection = FlexDirection.Row;
+            bar.style.alignItems = Align.Center;
+            bar.style.backgroundColor = Theme.CardBg;
+            Theme.Rounded(bar, Theme.Radius);
+            Theme.Border1(bar, Theme.Border);
+            Theme.Pad(bar, 8, 8, 2, 2);
+            // 只有一行高：禁掉换行 + 裁掉溢出。UI Toolkit 的父元素默认**不裁剪** ——
+            // 不设这个的话文字会画出自己的矩形、和右边按钮画在同一片像素上（实测「字叠在一起」）。
+            bar.style.overflow = Overflow.Hidden;
+
+            var pill = Theme.Pill("● 跟随采集中", Theme.Accent);
+            pill.style.flexShrink = 0f;      // 窄的时候该省略的是文字，不是把胶囊/按钮压没了
+            bar.Add(pill);
+
+            _compactLabel = new Label("等 Profiler 出数…");
+            _compactLabel.style.fontSize = Theme.SizeSmall;
+            _compactLabel.style.color = Theme.Text;
+            _compactLabel.style.marginLeft = 10;
+            _compactLabel.style.marginRight = 10;
+            _compactLabel.style.flexGrow = 1;
+            _compactLabel.style.flexShrink = 1;
+            _compactLabel.style.minWidth = 0;
+            _compactLabel.style.whiteSpace = WhiteSpace.NoWrap;
+            // 裁剪必须落在**标签自己**身上：只给外层条设 overflow 不够（实测踩过）。
+            _compactLabel.style.overflow = Overflow.Hidden;
+            _compactLabel.style.textOverflow = TextOverflow.Ellipsis;
+            bar.Add(_compactLabel);
+
+            var expand = Theme.Ghost("展开面板", delegate { SetCompact(false, true); });
+            expand.style.flexShrink = 0f;
+            bar.Add(expand);
+
+            var stop = Theme.Ghost("停止采集", ToggleFollowCapture);
+            stop.style.flexShrink = 0f;
+            bar.Add(stop);
+            return bar;
+        }
+
+        /// <summary>其它内容与小窗口二选一显示；顺便把窗口尺寸也缩/放。</summary>
+        void SetCompact(bool on, bool moveWindow)
+        {
+            if (_compactBar == null || _compact == on) return;
+            _compact = on;
+
+            var host = rootVisualElement;
+            for (int i = 0; i < host.childCount; i++)
+            {
+                var child = host[i];
+                if (child == _compactBar) continue;
+                child.style.display = on ? DisplayStyle.None : DisplayStyle.Flex;
+            }
+            _compactBar.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
+
+            if (on)
+            {
+                // 存「原尺寸」：看起来就不是正常面板的尺寸（小窗口本身、宽而扁）一律不存，
+                // 否则采集结束会把窗口恢复成一条横线，而且再也拉不回来（实测事故）。
+                if (CompactWindowGeometry.IsUsablePanelRect(position.width, position.height))
+                {
+                    _preCompactRect = position;
+                    SavePreCompactRect(_preCompactRect);
+                }
+                else if (!TryLoadPreCompactRect(out _preCompactRect))
+                {
+                    _preCompactRect = new Rect(position.x, position.y,
+                        CompactWindowGeometry.PanelWidth * 2f, CompactWindowGeometry.PanelHeight * 2f);
+                }
+
+                _preCompactMinSize = minSize;
+                // 根容器本来有 10/10/8/8 的内边距，在 48px 高的窗口里会把内容挤变形 —— 小窗口期间压到 4。
+                _preCompactPadding = new Vector4(rootVisualElement.style.paddingLeft.value.value,
+                    rootVisualElement.style.paddingRight.value.value,
+                    rootVisualElement.style.paddingTop.value.value,
+                    rootVisualElement.style.paddingBottom.value.value);
+                Theme.Pad(rootVisualElement, 4, 4, 4, 4);
+                // minSize 是浮动窗口的硬约束：不改小的话窗口会被拉回面板下限，小窗口就变成一张大空白面板。
+                minSize = new Vector2(360, 24);
+                if (moveWindow) ApplyCompactRect();
+            }
+            else
+            {
+                // 恢复 minSize：不能只信 _preCompactMinSize —— 进 Play 会域重载，它早就被清空了，
+                // 于是面板会带着小窗口的 minSize 回来，能一直小下去（实测就是这个原因）。
+                minSize = _preCompactMinSize.x > 1f
+                    ? _preCompactMinSize
+                    : PanelMinSize;
+                Theme.Pad(rootVisualElement, _preCompactPadding.x, _preCompactPadding.y,
+                    _preCompactPadding.z, _preCompactPadding.w);
+
+                if (_preCompactRect.width <= 1f && !TryLoadPreCompactRect(out _preCompactRect))
+                    _preCompactRect = new Rect(position.x, position.y,
+                        CompactWindowGeometry.PanelWidth * 2f, CompactWindowGeometry.PanelHeight * 2f);
+                if (moveWindow) RestorePanelRect();
+
+                try { SessionState.EraseString(PreCompactRectKey); } catch { }
+            }
+
+            RefreshCompactText();
+        }
+
+        void ApplyCompactRect()
+        {
+            try
+            {
+                var from = _preCompactRect.width > 1f ? _preCompactRect : position;
+                float x = from.x + Mathf.Max(0f, (from.width - CompactWindowGeometry.Width) * 0.5f);
+                position = new Rect(x, from.y, CompactWindowGeometry.Width, CompactWindowGeometry.Height);
+
+                // 停靠窗口写 position 不生效（尺寸由布局管）—— 读回来对不上就如实说出来。
+                _compactPositionOk = Mathf.Abs(position.width - CompactWindowGeometry.Width) < 2f
+                                     && Mathf.Abs(position.height - CompactWindowGeometry.Height) < 2f;
+            }
+            catch { _compactPositionOk = false; }
+        }
+
+        void RestorePanelRect()
+        {
+            try
+            {
+                if (_preCompactRect.width > 1f && _preCompactRect.height > 1f) position = _preCompactRect;
+            }
+            catch { }
+        }
+
+        static void SavePreCompactRect(Rect r)
+        {
+            try
+            {
+                SessionState.SetString(PreCompactRectKey,
+                    CompactWindowGeometry.Format(r.x, r.y, r.width, r.height));
+            }
+            catch { }
+        }
+
+        static bool TryLoadPreCompactRect(out Rect r)
+        {
+            r = new Rect();
+            try
+            {
+                float x, y, w, h;
+                if (!CompactWindowGeometry.TryParse(SessionState.GetString(PreCompactRectKey, ""), out x, out y, out w, out h))
+                    return false;
+                if (!CompactWindowGeometry.IsUsablePanelRect(w, h)) return false;   // 存坏的尺寸一律不用
+                r = new Rect(x, y, w, h);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>刷新小窗口上那一行数字（与面板上的实时监视同一份样本、同一口径）。</summary>
+        void RefreshCompactText()
+        {
+            if (_compactLabel == null) return;
+
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            var w = _live.waveform;
+            string text;
+            if (w.Count == 0)
+            {
+                text = "等 Profiler 出数…（" + CaptureWindow.CountLabel(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames) + "）";
+            }
+            else
+            {
+                text = w.Fps().ToString("0.#", culture) + " FPS"
+                     + "　帧耗时 P50 " + w.P50Ms().ToString("0.##", culture)
+                     + " / P95 " + w.P95Ms().ToString("0.##", culture)
+                     + " / 峰值 " + w.MaxMs().ToString("0.##", culture) + " ms"
+                     + "　" + CaptureWindow.CountLabel(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames);
+            }
+            if (!_compactPositionOk)
+                text += "　·　窗口是停靠状态，缩不小 —— 拖出来变成浮动窗口就会自动缩成这一行";
+
+            if (!string.Equals(_compactLabel.text, text, StringComparison.Ordinal))
+            {
+                _compactLabel.text = text;
+                _compactLabel.tooltip = "口径：" + _live.Source
+                    + "\n采集期间只留这一行，结束后面板自动恢复原尺寸。"
+                    + (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0
+                        ? "\n" + PanelCapture.DescribeProfilerState() : "");
+            }
+        }
+
+        /// <summary>手动在「小窗口 / 完整面板」之间切换（自动切换只发生在跟随采集的开始与结束）。</summary>
+        [MenuItem(MenuRoot + "面板：缩成小窗口 / 展开", false, 106)]
+        public static void CompactMenu()
+        {
+            var window = GetWindow<PerfAgentWindow>("性能诊断");
+            if (window._compactBar == null)
+            {
+                window.SetStatus("面板还在初始化，稍后再点一次。");
+                return;
+            }
+            window.SetCompact(!window._compact, true);
         }
 
         // =====================================================================
