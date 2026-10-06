@@ -18,14 +18,14 @@ namespace PerfAgent.Utils
     internal static class CompactWindowGeometry
     {
         /// <summary>
-        /// 小窗口的尺寸：一行要放得下「帧率 + 帧耗时 P50/P95/峰值 + 已记录 N 帧」加两个按钮。
+        /// 小窗口的尺寸。
         ///
-        /// 高度是 **72 而不是 48**（实测反馈：「那个小面板打开之后还是没有高度」）：
-        /// <c>EditorWindow.position</c> 的高度**包含标题栏**（约 22px），48 减去标题栏与内边距后
-        /// 正文只剩二十几像素，一行内容被裁得几乎看不见 —— 看着就是「窗口没高度」。
+        /// 高度 **272**（72 + 200，用户要求「缩小后的面板高度调高 200」）：小窗口里除了那一行数字，
+        /// 还会保留状态行与实时波形图（波形会自己撑满剩下的高度），高度太小就展示不下。
+        /// 另注：<c>EditorWindow.position</c> 的高度**包含标题栏**（约 22px），所以给的值得比正文需求高一点。
         /// </summary>
         public const float Width = 660f;
-        public const float Height = 72f;
+        public const float Height = 272f;
 
         /// <summary>面板的最小尺寸（与 <c>PerfAgentWindow.PanelMinSize</c> 保持一致：两栏能并排的底线）。</summary>
         public const float PanelWidth = 460f;

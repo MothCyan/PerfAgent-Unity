@@ -23,6 +23,8 @@ namespace PerfAgent.UI
         Toggle _aiToggle;
         VisualElement _liveHost;
         VisualElement[] _liveBars;
+        /// <summary>波形条的容器：小窗口模式下让它撑满剩余高度（那一块高度才有用）。</summary>
+        VisualElement _liveBarsHost;
         Label _liveLabel;
         /// <summary>预算表单的容器：恢复默认后要整体重建，否则输入框里还是旧值。</summary>
         VisualElement _budgetHost;
@@ -677,6 +679,9 @@ namespace PerfAgent.UI
             {
                 var child = host[i];
                 if (child == _compactBar) continue;
+                // 小窗口里同时留着状态行与实时波形图（波形自己撑满剩下的高度）——
+                // 只留一行数字的话，块高度给了就全是空白（实测反馈：「高度调高 200」）。
+                if (on && (child == _liveHost || child == _status)) continue;
                 child.style.display = on ? DisplayStyle.None : DisplayStyle.Flex;
             }
             _compactBar.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
@@ -706,6 +711,8 @@ namespace PerfAgent.UI
                 // minSize 是浮动窗口的硬约束：不改小的话窗口会被拉回面板下限，小窗口就变成一张大空白面板。
                 // 高度给到 40：窗口高度含标题栏，给太小会让正文被裁到看不见。
                 minSize = new Vector2(360, 40);
+                // 波形图在小窗口里撑满剩下的高度（窗口高 272，一行的数字只会占几十像素）
+                if (_liveBarsHost != null) { _liveBarsHost.style.flexGrow = 1; _liveBarsHost.style.height = StyleKeyword.Auto; }
                 if (moveWindow) ApplyCompactRect();
             }
             else
@@ -717,6 +724,8 @@ namespace PerfAgent.UI
                     : PanelMinSize;
                 Theme.Pad(rootVisualElement, _preCompactPadding.x, _preCompactPadding.y,
                     _preCompactPadding.z, _preCompactPadding.w);
+                // 波形图恢复成固定 46 高（完整面板里它本来就该是那个大小）
+                if (_liveBarsHost != null) { _liveBarsHost.style.flexGrow = 0; _liveBarsHost.style.height = 46; }
 
                 if (_preCompactRect.width <= 1f && !TryLoadPreCompactRect(out _preCompactRect))
                     _preCompactRect = new Rect(position.x, position.y,
@@ -870,6 +879,7 @@ namespace PerfAgent.UI
             bars.style.height = 46;
             bars.style.marginTop = 3;
             host.Add(bars);
+            _liveBarsHost = bars;
 
             _liveBars = new VisualElement[CaptureLiveStats.Capacity];
             for (int i = 0; i < _liveBars.Length; i++)
