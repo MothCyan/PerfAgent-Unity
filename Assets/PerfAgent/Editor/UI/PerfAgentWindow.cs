@@ -64,6 +64,8 @@ namespace PerfAgent.UI
         bool _stripDoneForThisCapture;
         /// <summary>停靠的窗口写 position 不生效；探测结果要写在细条上。</summary>
         bool _positionWritable = true;
+        /// <summary>连续「0 帧」的起点（EditorApplication.timeSinceStartup）；0 = 当前没在数。</summary>
+        double _stripZeroSince;
 
         /// <summary>会话的原始 Markdown；显示时统一转成富文本（否则 `**粗体**` 会原样显示星号）。</summary>
         readonly StringBuilder _transcriptRaw = new StringBuilder();
@@ -766,12 +768,36 @@ namespace PerfAgent.UI
             if (!_positionWritable)
                 text += "　·　面板是停靠状态，缩小不了 —— 把它拖出来（变成浮动窗口）就会自动收成细条";
 
+            // 「持续 0 帧」是最难自查的一种状态：采集在跑、数字不动，用户分不清是工具坏了还是 Profiler 没录。
+            // 所以超过 2 秒还是 0，就把原因直接写在条上（完整状态进 tooltip），别让人去 Console 里翻。
+            if (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0)
+            {
+                double now = EditorApplication.timeSinceStartup;
+                if (_stripZeroSince <= 0) _stripZeroSince = now;
+                if (now - _stripZeroSince > 2.0) text += "　·　" + NoFrameReason();
+            }
+            else
+            {
+                _stripZeroSince = 0;
+            }
+
             if (!string.Equals(_stripLabel.text, text, StringComparison.Ordinal))
             {
                 _stripLabel.text = text;
-                // 口径放在 tooltip 里：细条上只放数字，鼠标悬停能看完整口径。
-                _stripLabel.tooltip = "口径：" + _live.Source + "\n采集期间只留这一条，结束后面板会自动展开。";
+                // 口径与 Profiler 完整状态都放 tooltip：细条上只放数字与一句原因。
+                _stripLabel.tooltip = "口径：" + _live.Source
+                    + "\n采集期间只留这一条，结束后面板会自动展开。"
+                    + (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0
+                        ? "\n" + PanelCapture.DescribeProfilerState() : "");
             }
+        }
+
+        /// <summary>「采集中但一帧都没录到」的一句话原因（完整状态见 tooltip 与 Console Warning）。</summary>
+        static string NoFrameReason()
+        {
+            if (!ProfilerApi.Enabled) return "Profiler 没在记录（enabled=false）：到 Profiler 窗口点亮 Record";
+            if (ProfilerApi.LastFrameIndex < 0) return "Profiler 在记录但还没写出任何帧（last=-1）：稍等或重进一次 Play";
+            return "Profiler 有帧（last=" + ProfilerApi.LastFrameIndex + "）但本次起点对不上，已自动重定 —— 再等一帧";
         }
 
 

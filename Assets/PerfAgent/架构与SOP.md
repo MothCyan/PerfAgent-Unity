@@ -350,7 +350,26 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 两条一起卡的价值：**即便面板历史真的只有 300 帧，也拿得到上百帧可用数据**，不会退化成「无可对比」。
 
-### 10.7 工程级扫描必须按「当前场景目录」分组
+### 10.7 「一直记录 0 帧」：面板帧号是按 Profiling 会话递增的
+
+实测（用户报「为什么一直记录 0 帧」）：采集明明在跑，帧数就是不动 —— 玩多久都是 0，
+收尾时还会被判成「采集期间没有新帧」。
+
+根因：`ProfilerDriver.firstFrameIndex / lastFrameIndex` 是**按 Profiling 会话**递增的，
+进/退 Play 或清空帧数据之后会**从头开始**。而采集起点是「开始那一刻读到的帧号」——
+如果面板里还留着上一个会话的帧（用户自己开过的 Profiler、工具上一轮没清），起点就是一个**很大的旧号**；
+新会话从 0 开始后 `last - startFrame` 恒为负，于是帧数永远是 0。
+
+现在的口径（`CaptureWindow.RebaseOnSessionRestart`，纯逻辑、有离线回归）：
+
+- 面板已有帧且 `last < startFrame` = 帧号往回跳 = 会话重启 → 起点重定到面板里最早的一帧，
+  并把起点标为回推（快照备注写明「窗口可能含采集开始前后的少量帧」）；
+- 实时曲线 `CaptureLiveStats` 同样重定 `StartFrame`，否则界面上的「已记录 N 帧」也是 0；
+- 细条/面板上**持续 2 秒 0 帧就把原因写出来**（`enabled` / `lastFrameIndex` / 一句「到 Profiler 窗口点 Record」），
+  完整状态进 tooltip —— 「采集在跑、数字不动」时用户分不清是工具坏了还是 Profiler 没录，
+  不能只靠 Console 里的一条 Warning。
+
+### 10.8 工程级扫描必须按「当前场景目录」分组
 
 同一个工程里可以同时存在同一玩法的多份副本（本仓库的 `Assets/PerfAgentSample/{Before,After}` 就是），
 而静态扫描是工程级的（`Assets/**/*.cs`）—— 不分组的后果是：两份报告的「代码问题数」完全一样，
@@ -368,7 +387,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 判定必须用快照级的 `codeScopeRoot` 而不是「至少有一条问题命中」：完全可能本次采集的这份代码
 恰好一条问题都没有，而问题全在另一份副本里 —— 那正是最需要区分的场景。
 
-### 10.8 闸门口径必须跟着数字一起出去（一次真事故）
+### 10.9 闸门口径必须跟着数字一起出去（一次真事故）
 
 实测（After 副本，快照 20261006_210811）：`get_code_issues` 返回 `total=0`，
 而 `get_metrics` 里「每帧托管分配 14443.6 B」摆着预算 2048 B —— AI 直接算出
@@ -397,9 +416,9 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 给了数字不给判断，等于邀请每一个读者（包括模型）自己重算一遍，
 而他们不知道你手里那三道闸门。
 
-### 10.9 验收方式
+### 10.10 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 83 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 85 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|
@@ -415,6 +434,8 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `EventCallbackFindingsAreNotCalledPerFrame` | 碰撞/触发回调里的写法不得说成「每帧方法中出现」，级别封顶到警告，证据里写清执行时机 |
 | `FrameAllocDisplayNeverFakesZero` | 逐帧分配取面板序列（不是恒为 0 的弱口径），拿不到返回 -1/NaN 并由调用方印「—」「不可用」 |
 | `StripGeometryGuardsAgainstTinyRestore` | 细条尺寸不得被当成「收起前的尺寸」（否则采集结束会恢复成一个废窗口）；尺寸串解析拒绝 0x0 / NaN / 字段数不对 |
+| `SessionRestartRebasesTheStartFrame` | 面板帧号往回跳（会话重启）时必须重定采集起点，否则帧数永远是 0；正常递增时不得乱动起点 |
+| `LiveStatsRebaseOnFrameIndexRestart` | 实时曲线同样重定起点，重启后从新起点重新起算而不是恒为 0 |
 
 ---
 

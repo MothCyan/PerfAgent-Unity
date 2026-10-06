@@ -49,5 +49,26 @@ namespace PerfAgent.Utils
             lastFrame = lastAvailable;
             return true;
         }
+
+        /// <summary>
+        /// Profiler **会话重启**时把采集起点重定到面板里最早的一帧。
+        ///
+        /// 为什么要单独处理：面板帧号是**按 Profiling 会话**递增的，进/退 Play 或清空帧数据之后
+        /// 会从头开始。而采集起点是「开始那一刻读到的帧号」，可能来自上一个会话（一个很大的旧号），
+        /// 于是 <c>last - startFrame</c> 恒为负 → 界面上**一直显示「已记录 0 帧」**，玩多久都不动，
+        /// 收尾时还会被判成「采集期间没有新帧」（实测就是用户看到的那个现象）。
+        ///
+        /// 判据：面板已有帧，但最新帧号**比起点还小** —— 帧号往回跳只可能是会话重启。
+        /// 这种情况返回面板里最早的一帧当新起点（并让调用方把起点标为“回推”，快照里会写明）。
+        /// </summary>
+        /// <returns>重定后的起点；不需要重定时原样返回 pendingStartFrame</returns>
+        public static int RebaseOnSessionRestart(int pendingStartFrame, int firstAvailable, int lastAvailable)
+        {
+            if (pendingStartFrame < 0) return pendingStartFrame;   // 还没起点，交给 TryResolve 处理
+            if (lastAvailable < 0) return pendingStartFrame;       // 面板还没有帧，不能重定
+            if (lastAvailable >= pendingStartFrame) return pendingStartFrame;
+
+            return firstAvailable >= 0 ? firstAvailable : lastAvailable;
+        }
     }
 }

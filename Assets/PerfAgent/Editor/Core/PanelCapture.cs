@@ -59,6 +59,12 @@ namespace PerfAgent.Core
         bool _warnedNoFrames;
 
         /// <summary>
+        /// 本次采集重定过起点：开始那一刻读到的面板帧号来自上一个 Profiling 会话（帧号往回跳）。
+        /// 收尾时写进快照备注 —— 这种情况的窗口可能含采集开始前后的少量帧。
+        /// </summary>
+        bool _rebasedToRestart;
+
+        /// <summary>
         /// 只用来「点亮」GC 分配计数器的订阅（不读它的值）。
         /// 这个计数器只在有人订阅时才会逐帧记录，否则面板序列是空的。
         /// </summary>
@@ -87,6 +93,7 @@ namespace PerfAgent.Core
             running = true;
             startFrame = -1;
             startFrameInferred = false;
+            _rebasedToRestart = false;
             CapturedCount = 0;
 
             // 面板在记录，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
@@ -142,12 +149,21 @@ namespace PerfAgent.Core
             // 而本轮可能直到收尾都没轮询过一次 —— 这里再试一次，否则整段采集会被判成「还没开始就结束了」
             AdoptStartFrame(last);
 
+            // 兜底：极短采集可能一次都没轮询过，会话重启的重定在这里补一次
+            int rebasedOnStop = CaptureWindow.RebaseOnSessionRestart(startFrame, ProfilerApi.FirstFrameIndex, last);
+            if (rebasedOnStop != startFrame)
+            {
+                startFrame = rebasedOnStop;
+                startFrameInferred = true;
+                _rebasedToRestart = true;
+            }
+
             int firstFrame, lastFrame;
             bool inferred;
             PanelCaptureData data;
             if (last < 0)
             {
-                data = new PanelCaptureData { unavailableReason = DescribeEmptyProfiler() };
+                data = new PanelCaptureData { unavailableReason = DescribeProfilerState() };
             }
             else if (!CaptureWindow.TryResolve(startFrame, ProfilerApi.FirstFrameIndex, last,
                                                out firstFrame, out lastFrame, out inferred))
@@ -166,6 +182,12 @@ namespace PerfAgent.Core
                     data.notes.Add("采集窗口起点是回推的：开始采集那一刻 Profiler 面板还没有帧"
                         + "（这一轮采集刚把 Profiler 打开），于是用面板里最早的一帧（" + firstFrame
                         + "）作为起点；窗口因此可能包含采集开始前后的少量帧。");
+                }
+                if (data != null && data.available && _rebasedToRestart)
+                {
+                    data.notes.Add("本次采集开始时读到的面板帧号来自上一个 Profiling 会话（进/退 Play 或清空帧数据"
+                        + "会让帧号从头算），所以起点已自动重定到面板里最早的一帧 —— 不重定的话帧数会恒算成 0"
+                        + "（界面上就是「一直记录 0 帧」）。窗口因此可能包含采集开始前后的少量帧。");
                 }
             }
 
@@ -190,7 +212,7 @@ namespace PerfAgent.Core
         }
 
         /// <summary>面板一帧都没有时的原因——把 Profiler 的实际状态写出来，下次能直接定位。</summary>
-        static string DescribeEmptyProfiler()
+        public static string DescribeProfilerState()
         {
             return "Profiler 面板一帧都没录到（enabled=" + ProfilerApi.Enabled
                 + "，profileEditor=" + ProfilerApi.ProfileEditor
@@ -209,6 +231,18 @@ namespace PerfAgent.Core
             _nextPoll = now + _pollIntervalMs;
 
             int last = ProfilerApi.LastFrameIndex;
+
+            // Profiler 会话重启（进/退 Play、清空帧数据）会让帧号**从头开始**，
+            // 而 startFrame 是开始那一刻读的、可能来自上一个会话（一个很大的旧号）——
+            // 不重定的话 last - startFrame 恒为负，界面上就一直显示「已记录 0 帧」（实测问题）。
+            int rebased = CaptureWindow.RebaseOnSessionRestart(startFrame, ProfilerApi.FirstFrameIndex, last);
+            if (rebased != startFrame)
+            {
+                startFrame = rebased;
+                startFrameInferred = true;
+                _rebasedToRestart = true;
+            }
+
             AdoptStartFrame(last);
             CapturedCount = (startFrame < 0 || last < startFrame) ? 0 : last - startFrame;
 

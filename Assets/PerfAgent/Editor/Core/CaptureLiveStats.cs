@@ -84,6 +84,10 @@ namespace PerfAgent.Core
             {
                 if (StartFrame < 0) return false;
 
+                // 帧号往回跳 = Profiler 会话重启（进/退 Play、清空帧数据）：
+                // 把起点重定到当前帧，否则 PanelFrames 会一直算出 0（界面上就是「已记录 0 帧」）。
+                if (lastFrameIndex < StartFrame) StartFrame = lastFrameIndex;
+
                 LastFrameIndex = lastFrameIndex;
 
                 double dt = now - _lastTime;
