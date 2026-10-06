@@ -676,7 +676,7 @@ namespace PerfAgent.UI
             // 与明细区一起瓜分右栏高度：窗口高的时候记录区跟着变高，
             // 而不是永远卡在一个 150 px 的小窗里（那样长回答根本没法读）。
             card.style.flexGrow = 1;
-            card.style.minHeight = 180;
+            card.style.minHeight = 160;
 
             // 标题行右侧放按钮：长在标题里就不占额外的高度
             var titleRow = Theme.CardTitleRow(card);
@@ -692,14 +692,29 @@ namespace PerfAgent.UI
                 titleRow.Add(Theme.Ghost("新会话", NewConversation));
             }
 
+            // 记录区：外层容器负责「占多高」，ScrollView 绝对填充它。
+            //
+            // 为什么不能直接把 flexGrow 加在 ScrollView 上（踩过）：
+            // ScrollView 的基准高度 = 内容高度，而对话卡又是 flexShrink=0，
+            // 两者一叠，卡片就被内容撑破 —— 结果是记录区自己不需要滚动（没滚动条），
+            // 多出来的内容直接超出窗口被裁掉。用绝对定位就不会把内容高度算进基准。
+            var transcriptBox = new VisualElement();
+            transcriptBox.style.flexGrow = 1;
+            transcriptBox.style.minHeight = 84;
+            card.Add(transcriptBox);
+
             _transcriptScroll = new ScrollView(ScrollViewMode.Vertical);
-            _transcriptScroll.style.flexGrow = 1;
-            _transcriptScroll.style.minHeight = 100;
+            _transcriptScroll.verticalScrollerVisibility = ScrollerVisibility.Auto;
+            _transcriptScroll.style.position = Position.Absolute;
+            _transcriptScroll.style.left = 0;
+            _transcriptScroll.style.top = 0;
+            _transcriptScroll.style.right = 0;
+            _transcriptScroll.style.bottom = 0;
             _transcriptScroll.style.backgroundColor = Theme.SunkenBg;
             Theme.Rounded(_transcriptScroll, 4f);
             Theme.Border1(_transcriptScroll, Theme.Border);
             Theme.Pad(_transcriptScroll, 8, 8, 6, 6);
-            card.Add(_transcriptScroll);
+            transcriptBox.Add(_transcriptScroll);
 
             _transcript = new Label();
             _transcript.style.whiteSpace = WhiteSpace.Normal;
@@ -1095,6 +1110,16 @@ namespace PerfAgent.UI
             // 直接对累加结果做转换，`**` 跨两次追加（流式回答）时才不会碎掉。
             _transcriptRaw.Append(markdown);
             _transcript.text = Theme.RichText(_transcriptRaw.ToString());
+
+            // 滚到最后：直接设一次会被裁掉（此时内容高度还是旧的，offset 被夹到 0，
+            // 表现就是“追加了长回答却停在开头”），所以下一个 panel tick 再设一次。
+            ScrollTranscriptToEnd();
+            _transcriptScroll.schedule.Execute(ScrollTranscriptToEnd);
+        }
+
+        void ScrollTranscriptToEnd()
+        {
+            if (_transcriptScroll == null) return;
             _transcriptScroll.scrollOffset = new Vector2(0, float.MaxValue);
         }
 
