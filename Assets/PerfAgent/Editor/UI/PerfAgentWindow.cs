@@ -60,6 +60,10 @@ namespace PerfAgent.UI
         bool _stripped;
         Rect _preStripRect;
         Vector2 _preStripMinSize;
+
+        /// <summary>尺寸自愈的限流时间点；以及「已报过一次被撑大」的标记。</summary>
+        double _nextSizeCheck;
+        bool _warnedWindowGrown;
         /// <summary>本次采集已经自动收过一次 —— 用户手动展开后不再自动收起。</summary>
         bool _stripDoneForThisCapture;
         /// <summary>停靠的窗口写 position 不生效；探测结果要写在细条上。</summary>
@@ -230,11 +234,36 @@ namespace PerfAgent.UI
             {
                 var p = position;
                 if (!StripGeometry.NeedsGrow(p.width, p.height)) return;
-                position = new Rect(p.x, p.y,
-                    StripGeometry.Grow(p.width, StripGeometry.PanelWidth),
-                    StripGeometry.Grow(p.height, StripGeometry.PanelHeight));
+
+                float w = StripGeometry.Grow(p.width, StripGeometry.PanelWidth);
+                float h = StripGeometry.Grow(p.height, StripGeometry.PanelHeight);
+                position = new Rect(p.x, p.y, w, h);
+
+                // 只报一次：日志本身也是开销，而且这件事不需要反复提醒。
+                if (!_warnedWindowGrown)
+                {
+                    _warnedWindowGrown = true;
+                    Debug.Log("[PerfAgent] 面板被恢复成了不可用的小尺寸（" + p.width.ToString("0") + "x"
+                        + p.height.ToString("0") + "），已撑到 " + w.ToString("0") + "x" + h.ToString("0")
+                        + "。minSize 只约束手动拖拽，管不住「从布局恢复」与「细条来回」，所以这里主动校正。");
+                }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 尺寸自愈的限流包装：每个轮询周期校验一次就够（写 position 会触发窗口重排，按秒限流）。
+        ///
+        /// 为什么不能只靠 OnEnable / 细条展开两条路径（实测反馈「现在还是这样，往下拉一点啊」）：
+        /// 面板被存成「宽而扁」后，OnEnable 早已跑过、也没再经过细条切换 —— 它就那么扁着，
+        /// 只有持续校验才会被纠正回来。
+        /// </summary>
+        void EnsureUsableWindowSizeThrottled()
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (now < _nextSizeCheck) return;
+            _nextSizeCheck = now + 1.0;
+            EnsureUsableWindowSize();
         }
 
         void OnDisable()
@@ -473,6 +502,13 @@ namespace PerfAgent.UI
         /// </summary>
         void PollFollowCapture()
         {
+            // 尺寸自愈放在最前面：**不能只靠 OnEnable 与细条展开这两条路径**。
+            // 实测反馈：「现在还是这样，往下拉一点啊」—— 面板被存成「宽而扁」（1460x85）后，
+            // OnEnable 早已跑过、也没再经过细条切换，于是它就那么扁着；
+            // 而宽度很大时旧的判定（看宽度就以为不是细条）还会把它当成「面板尺寸」存下来，越存越扁。
+            // 这里按 1 秒限流主动校验一次：小到不可用就擑回来（细条期间跳过，停靠窗口 Unity 会忽略 position）。
+            EnsureUsableWindowSizeThrottled();
+
             if (FollowCapture.Capturing)
             {
                 // 采集一开始就把面板收成细条：面板常常就飘在 Game 视图旁边，
@@ -716,10 +752,12 @@ namespace PerfAgent.UI
             {
                 // 进 Play 会触发域重载，字段会被清空，但**窗口尺寸是持久的** ——
                 // 重载后重新收起时，当前尺寸可能已经是细条了，绝不能把它当成「原来的尺寸」存下来，
-                // 否则采集结束后会「恢复」成 520x32，面板再也用不了。所以：
-                //   看起来不像细条 → 记下来（字段 + SessionState，后者能跨域重载）；
-                //   看起来就是细条 → 用之前存过的。
-                if (position.width > StripGeometry.Width + 40f || position.height > StripGeometry.Height + 20f)
+                // 否则采集结束后会「恢复」成一条细条、面板再也用不了。
+                //
+                // 判定必须用 NeedsGrow（要求**宽高都**达到面板下限），不能用「宽度够大就算面板」：
+                // 「宽而扁」（实测 1460x85）会通过只看宽度的旧判定被存成「面板尺寸」，
+                // 展开后就把面板恢复成一条扁窗口。
+                if (!StripGeometry.NeedsGrow(position.width, position.height))
                 {
                     _preStripRect = position;
                     SavePreStripRect(_preStripRect);

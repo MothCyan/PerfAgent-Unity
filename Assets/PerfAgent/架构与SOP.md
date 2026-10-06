@@ -649,11 +649,16 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
      `overflow = Hidden` + `NoWrap` + `Ellipsis`；同时胶囊与按钮设 `flexShrink = 0` ——
      窄的时候该省略的是文字，不是把按钮压没了。
    - 细条上的诊断文案**只留短标记**（如「长时间 0 帧」），完整原因进 tooltip 与 Console。
-   - **面板「被存小了」是不会自己变大的**（实测反馈：截图里整个面板只剩一条监视行，字还被截到「口径」）：
+   - **面板「被存小了」是不会自己变大的**（实测反馈：整个面板只剩一条监视行、字被截到「口径」）：
      `minSize` 只约束**手动拖拽**，管不住「Unity 从布局恢复一个小尺寸」与
      「细条收/展切换时 `minSize` 被域重载清掉」—— 两种都会让面板一直小下去，内容只会被裁掉。
-     所以恢复路径上除了设 `minSize`，还要**主动撑一下**（`StripGeometry.NeedsGrow` / `Grow` +
-     `PerfAgentWindow.EnsureUsableWindowSize`，在 `OnEnable` 与展开时各调一次；停靠窗口忽略 `position`，安全）。
+     所以要**持续校验并主动撑**（`StripGeometry.NeedsGrow` / `Grow` + `PerfAgentWindow.EnsureUsableWindowSize`）：
+     `OnEnable`、细条展开、**以及每次轮询（1 秒限流）** 都调一遍。
+     为什么必须放进轮询：实测第二张截图是「宽而扁」（1460x85）—— `OnEnable` 早已跑过、也没再经过细条切换，
+     只靠那两条路径永远纠不回来；撑的时候只报一次日志，避免刷屏。
+   - **`preStripRect` 的判定必须要求「宽高都够」**：旧写法 `width > 细条宽+40 || height > 细条高+20`
+     只要**宽度**够大就会把当前尺寸当成「面板尺寸」存下来，于是「1460x85」成了恢复目标，
+     展开后把面板恢复成一条扁窗口。现在用 `!StripGeometry.NeedsGrow(w, h)`（宽高都要达到面板下限）。
    - 细条默认尺寸是 **720x36**（原来是 520x32）：宽度是按**真实文案量出来的** ——
      「帧率 + 帧耗时 P50/P95/峰值 + 已记录 N 帧 · 窗口 N 帧」在 520 里会被裁掉尾巴。
      改这个常量时记得同步看 `LooksLikeStrip` 的容差（它相对常量算），否则会出现
