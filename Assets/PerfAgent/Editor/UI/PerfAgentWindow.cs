@@ -148,6 +148,11 @@ namespace PerfAgent.UI
 
         void OnEnable()
         {
+            // minSize 以前只在 Open() 里设过。而窗口被 Unity 从布局恢复时不走 Open()，
+            // 于是可以恢复成一个很小的尺寸：两栏被挤扁、卡片内容互相重叠（实测就是这样）。
+            // 这里也设一遍，让恢复回来的窗口被拉回可用尺寸。
+            minSize = new Vector2(900, 600);
+
             PerfSession.Changed += OnSessionChanged;
             PerfAgentSettingsWindow.Changed += RefreshLlmStatus;
             Agent.OnStatus += SetStatus;
@@ -201,9 +206,17 @@ namespace PerfAgent.UI
             _llmStatus = Theme.Pill("AI：检查中…", Theme.TextDim);
             header.Add(_llmStatus);
             header.Add(Theme.Ghost("LLM 配置", PerfAgentSettingsWindow.Open));
+            // ---- 顶部这一串不允许被压扁 ----
+            //
+            // UI Toolkit 在纵向空间不够时，会把 flexShrink=1 的子元素压到比内容还小，
+            // 而它不会裁剪 —— 结果是标签叠字、输入框被压成一条黑边。
+            // 宁可让下面两块（左栏/明细）去滚动，也不让标题、工具条、状态行变形。
+            header.style.flexShrink = 0;
             root.Add(header);
 
-            root.Add(BuildToolbar());
+            var toolbar = BuildToolbar();
+            toolbar.style.flexShrink = 0;
+            root.Add(toolbar);
             root.Add(Theme.Divider());
 
             // ---- 状态行 ----
@@ -213,25 +226,35 @@ namespace PerfAgent.UI
             _status.style.marginBottom = 2;
             _status.style.color = Theme.TextDim;
             _status.style.whiteSpace = WhiteSpace.Normal;
+            _status.style.flexShrink = 0;
             root.Add(_status);
 
             _liveHost = BuildLiveStrip();
             _liveHost.style.display = DisplayStyle.None;   // 有样本了才显示
+            _liveHost.style.flexShrink = 0;
             root.Add(_liveHost);
 
             // ---- 两栏 ----
             var columns = new VisualElement();
             columns.style.flexDirection = FlexDirection.Row;
             columns.style.flexGrow = 1;
+            columns.style.flexShrink = 1;
             columns.style.marginTop = 6;
             root.Add(columns);
 
-            // 左栏：标签 / 快照 / 预算
-            var left = new VisualElement();
-            left.style.width = 300;
-            left.style.marginRight = 10;
+            // 左栏：标签 / 快照 / 预算。
+            //
+            // 这一栏必须能滚：三张卡片的自然高度加起来（标签 + 快照列表 + 预算表单）比窗口高是常态，
+            // 而纵向空间不够时卡片会被压扁 —— 实测就是这样：预算卡里的行叠在一起、
+            // 输入框被压成一条黑杠、标签页被裁掉半行。
+            var leftScroll = new ScrollView(ScrollViewMode.Vertical);
+            leftScroll.style.width = 300;
+            leftScroll.style.marginRight = 10;
+            leftScroll.style.flexShrink = 0;
+            columns.Add(leftScroll);
+
+            var left = leftScroll.contentContainer;
             left.style.flexDirection = FlexDirection.Column;
-            columns.Add(left);
 
             var tabsCard = Theme.Card("分析标签", "按维度看明细");
             _tabRow = new VisualElement();
@@ -244,6 +267,7 @@ namespace PerfAgent.UI
             var snapCard = Theme.Card("快照", "历史分析结果");
             _snapshotHost = new ScrollView(ScrollViewMode.Vertical);
             _snapshotHost.style.maxHeight = 180;
+            _snapshotHost.style.flexShrink = 0;
             snapCard.Add(_snapshotHost);
             left.Add(snapCard);
 
@@ -256,11 +280,15 @@ namespace PerfAgent.UI
             // 右栏：明细 + 会话
             var right = new VisualElement();
             right.style.flexGrow = 1;
+            right.style.flexShrink = 1;
+            // 窄到一定程度时，明细区会被挤得没法看，不如让它保住一块可用宽度
+            right.style.minWidth = 360;
             right.style.flexDirection = FlexDirection.Column;
             columns.Add(right);
 
             _detailHost = new ScrollView(ScrollViewMode.Vertical);
             _detailHost.style.flexGrow = 1;
+            _detailHost.style.minHeight = 140;
             _detailHost.style.backgroundColor = Theme.SunkenBg;
             Theme.Rounded(_detailHost, Theme.Radius);
             Theme.Border1(_detailHost, Theme.Border);
@@ -636,6 +664,7 @@ namespace PerfAgent.UI
         {
             var card = Theme.Card("对话追问", "看不懂结论就在这里问；没配 Key 也能用（走本地规则引擎）");
             card.style.marginTop = 6;
+            card.style.flexShrink = 0;   // 窗口矮的时候也不要压缩输入区
 
             _transcriptScroll = new ScrollView(ScrollViewMode.Vertical);
             _transcriptScroll.style.height = 150;

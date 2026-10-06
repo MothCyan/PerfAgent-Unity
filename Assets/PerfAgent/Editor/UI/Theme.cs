@@ -134,6 +134,10 @@ namespace PerfAgent.UI
             Border1(card, Border);
             Pad(card, 8, 8, 6, 8);
             card.style.marginBottom = CardGap;
+            // 卡片永远保持自己的自然高度：UI Toolkit 在纵向空间不足时会把子元素压到比内容还小，
+            // 而它不会裁剪 —— 结果是里面的标签叠字、输入框被压成一条黑边。
+            // 需要装更多内容时，请让外层容器去滚动（左侧栏就是 ScrollView）。
+            card.style.flexShrink = 0;
 
             if (!string.IsNullOrEmpty(title))
             {
@@ -365,6 +369,9 @@ namespace PerfAgent.UI
             row.style.flexDirection = FlexDirection.Row;
             row.style.alignItems = Align.Center;
             row.style.marginBottom = 3;
+            // 一行必须保有最小高度：被压扁时输入框会变成一条黑杠、文字互相叠（实测踩过）
+            row.style.flexShrink = 0;
+            row.style.minHeight = 20;
 
             var lbl = new Label(label);
             lbl.style.flexGrow = 1;
