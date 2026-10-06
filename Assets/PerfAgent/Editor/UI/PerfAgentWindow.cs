@@ -76,6 +76,8 @@ namespace PerfAgent.UI
         string _baselinePath = "";
         /// <summary>当前会话 id（= 持久化文件名）。为空表示尚未保存过。</summary>
         string _conversationId = "";
+        /// <summary>正在等回答（防止重复发送）。不用按钮的 enabled 状态兼职：见 SetSending。</summary>
+        bool _sending;
 
         [MenuItem(MenuRoot + "打开性能诊断面板 %#p", false, 100)]
         public static void Open()
@@ -249,8 +251,11 @@ namespace PerfAgent.UI
             // 输入框被压成一条黑杠、标签页被裁掉半行。
             var leftScroll = new ScrollView(ScrollViewMode.Vertical);
             leftScroll.style.width = 300;
+            // 允许收缩到一个能看的宽度：minSize 对「停靠」的窗口是不生效的（停靠尺寸由布局决定），
+            // 所以窄窗口下必须自己能挤，而不是把右栏（连带发送按钮）顶出窗口外。
+            leftScroll.style.minWidth = 240;
+            leftScroll.style.flexShrink = 1;
             leftScroll.style.marginRight = 10;
-            leftScroll.style.flexShrink = 0;
             columns.Add(leftScroll);
 
             var left = leftScroll.contentContainer;
@@ -281,8 +286,9 @@ namespace PerfAgent.UI
             var right = new VisualElement();
             right.style.flexGrow = 1;
             right.style.flexShrink = 1;
-            // 窄到一定程度时，明细区会被挤得没法看，不如让它保住一块可用宽度
-            right.style.minWidth = 360;
+            // 最小宽度给得很克制：给太大（原来 360）会让整排超出窗口，
+            // 结果是卡片右侧（正是发送按钮所在的位置）被裁到窗口外。
+            right.style.minWidth = 180;
             right.style.flexDirection = FlexDirection.Column;
             columns.Add(right);
 
@@ -683,11 +689,17 @@ namespace PerfAgent.UI
             var row = new VisualElement();
             row.style.flexDirection = FlexDirection.Row;
             row.style.marginTop = 6;
+            row.style.flexShrink = 0;
+            // 空间不够时宁可让按钮换到下一行，也不能把它挤出可视区
+            //（实测：输入框 flexGrow 把按钮顶到了卡片外，看起来就像「没有发送按钮」）
+            row.style.flexWrap = Wrap.Wrap;
             card.Add(row);
 
             _input = new TextField();
             _input.multiline = true;
             _input.style.flexGrow = 1;
+            _input.style.flexShrink = 1;
+            _input.style.minWidth = 120;     // 可收缩，但至少留得下几个字
             _input.style.height = 52;
             _input.style.fontSize = Theme.SizeBody;
             _input.RegisterCallback<KeyDownEvent>(delegate (KeyDownEvent evt)
@@ -700,14 +712,21 @@ namespace PerfAgent.UI
             });
             row.Add(_input);
 
-            _sendButton = Theme.Primary("发送\n(Ctrl+Enter)", Send);
+            _sendButton = Theme.Primary("发送", Send);
             _sendButton.style.width = 96;
+            // flexShrink 默认是 1：不给 minWidth 的话这个按钮会被攼到看不见
+            _sendButton.style.minWidth = 96;
+            _sendButton.style.flexShrink = 0;
+            _sendButton.style.flexGrow = 0;
             _sendButton.style.height = 52;
             _sendButton.style.marginLeft = 6;
             _sendButton.style.marginRight = 0;
             _sendButton.style.marginBottom = 0;
             _sendButton.style.fontSize = Theme.SizeSmall;
+            _sendButton.tooltip = "发送（Ctrl+Enter）";
             row.Add(_sendButton);
+
+            card.Add(Theme.Hint("Ctrl+Enter 发送。没配 LLM Key 也照样能用 —— 会走本地规则引擎回答。"));
 
             return card;
         }
@@ -767,17 +786,19 @@ namespace PerfAgent.UI
 
         void Send()
         {
+            if (_sending) return;
+
             var text = _input.value;
             if (string.IsNullOrEmpty(text)) return;
 
             _input.value = "";
             AppendTranscript("\n**我**：" + text + "\n\n**Agent**：");
-            _sendButton.SetEnabled(false);
+            SetSending(true);
 
             if (!PerfAgentSettings.Config.HasApiKey)
             {
                 AppendTranscript(ScriptOnlyAnswer(text));
-                _sendButton.SetEnabled(true);
+                SetSending(false);
                 SetStatus("已用本地规则引擎回答（未配置 LLM）");
                 SaveConversation();
                 return;
@@ -793,17 +814,36 @@ namespace PerfAgent.UI
                 delegate (string answer)
                 {
                     AppendTranscript("\n" + answer + "\n");
-                    _sendButton.SetEnabled(true);
+                    SetSending(false);
                     SetStatus("完成");
                     SaveConversation();
                 },
                 delegate (string error)
                 {
                     AppendTranscript("\n⚠ " + error + "\n");
-                    _sendButton.SetEnabled(true);
+                    SetSending(false);
                     SetStatus("失败");
                     SaveConversation();
                 });
+        }
+
+        /// <summary>
+        /// 发送中 / 空闲 的按钮状态。
+        ///
+        /// 不再只调 SetEnabled(false)：Unity 深色主题下被禁用的按钮会跟卡片底色几乎同色，
+        /// 看起来就像「发送按钮不见了」（实测有人就是这么反馈的）。
+        /// 所以这里自己改文字 + 配色：变灰但看得见，且状态一目了然。
+        /// </summary>
+        void SetSending(bool busy)
+        {
+            _sending = busy;
+            if (_input != null) _input.SetEnabled(!busy);
+            if (_sendButton == null) return;
+
+            _sendButton.text = busy ? "生成中…" : "发送";
+            _sendButton.SetEnabled(!busy);
+            _sendButton.style.backgroundColor = busy ? Theme.BtnBg : Theme.Accent;
+            _sendButton.style.color = busy ? Theme.TextDim : Color.white;
         }
 
         // =====================================================================
