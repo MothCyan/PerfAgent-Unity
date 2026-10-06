@@ -118,6 +118,15 @@ namespace PerfAgent.Core
             if (!AutoPlayGate.ShouldEnterPlay(_armed, allowed,
                     EditorApplication.isPlaying, EditorApplication.isPlayingOrWillChangePlaymode)) return;
 
+            // 编辑器正忙的时候按 Play 会被忽略/排队到不确定的时刻 ——
+            // 宁可说清楚、让用户自己按一次（_armed 还在，Play 起来照样会自动开始记录）。
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
+            {
+                Debug.LogWarning("[PerfAgent] 编辑器正在编译 / 刷新资源，这次不自动进 Play —— "
+                    + "请自己按一次 Play；基线已经量好，进入 Play 后会自动开始记录。");
+                return;
+            }
+
             Debug.Log("[PerfAgent] 编辑器开销基线已量好，自动进入 Play 开始采集（可在 PerfAgent 设置里关掉「点采集后自动进入 Play」）。");
             EditorApplication.isPlaying = true;
         }

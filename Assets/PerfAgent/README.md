@@ -79,7 +79,8 @@
 After 那一份的 asset GUID 整体重发过，因此能同时待在一个工程里互不干扰；两个场景都已登记在 Build Settings 里。
 
 ```
-打开 Before/Scenes/AngryBirdsBefore.unity → Play →「跟随采集」玩 5~10 秒 → 退出 Play 生成快照
+打开 Before/Scenes/AngryBirdsBefore.unity → 面板点「跟随采集」（量完基线自动进 Play）
+  → 玩 5~10 秒 → 退出 Play 生成快照
   → 打开 After/Scenes/AngryBirdsAfter.unity → 再采一份
   → 「对比」页选这两份快照
 ```
@@ -527,27 +528,30 @@ Tools > PerfAgent > MCP 集成 > 状态     看当前状态与工具清单
 | `perf_get_findings` | 取结论 + 完整证据链 | 无 |
 | `perf_get_metrics` | 取指标 + 预算对比 + 数据来源 API | 无 |
 | `perf_get_fix_plan` | 取一键修复计划（动作 id / 风险 / 影响面） | 无 |
-| `perf_follow_capture_start` | 进入跟随采集待命：**用户自己进 Play 操作**，工具在旁边记录 | 无 |
+| `perf_follow_capture_start` | 进入跟随采集待命：**用户自己进 Play 操作**，工具在旁边记录（MCP 不替你按 Play） | 无 |
 | `perf_follow_capture_status` | 查跟随采集状态（待命 / 采集中 / 已记录帧数） | 无 |
 | `perf_follow_capture_stop` | 结束采集并出快照（**不会退出 Play**） | 无 |
 
 ### 跟随采集：你自己操作，工具在旁边记录
 
-这是本工具集里**唯一**能拿到运行时数据的入口，而且它**不控制 Play 模式** ——
-你进 Play 自己玩，PerfAgent 在旁边记录，**时长不限**：
+这是本工具集里**唯一**能拿到运行时数据的入口，而且**时长不限**：
 
 ```
-点面板工具栏「跟随采集」  → 待命
-进入 Play 模式             → 自动开始记录（不用再点一次）
+点面板工具栏「跟随采集」  → 先量编辑器开销基线（约 1~4 秒），然后自动替你进入 Play 开始记录
+不想让它按 Play 时       → 设置里关掉「点「跟随采集」后自动进入 Play」，自己按 Play 效果一样
 你自己操作：战斗、开背包、切界面、读档 …
 点「跟随采集」再结束       → 立刻出快照（不会退出 Play，你可以接着玩）
 ```
 
+> **「自动进 Play」只是面板按钮的行为**：MCP / AI 侧没有进 Play 的入口。
+> `perf_follow_capture_start` 只进入待命，然后提示用户自己去操作。
+
 也可以直接退出 Play —— 退出那一刻会自动收尾。但**推荐在 Play 里点停止**：
 退出 Play 那一帧 `AssetDatabase` 已经不太可靠，资源审计可能拿不到数据。
 
-为什么不自己进 Play：这个模式的价值就在于**操作是人做出来的**。脚本演不出玩家的操作节奏 ——
+为什么仍然坚持「操作必须是人做出来的」：脚本演不出玩家的操作节奏 ——
 真实的按键间隔、突然的开镜、边走边翻背包，这些才是卡顿的真正来源。
+工具只帮你按了一下 Play，之后不干预任何操作（不想要这一下就在设置里关掉）。
 
 MCP 侧的正确用法：`perf_follow_capture_start` 进入待命 → **提示用户去操作（不要替他按 Play）**
 → 轮询 `perf_follow_capture_status` → 用户玩完后再 `perf_follow_capture_stop`。

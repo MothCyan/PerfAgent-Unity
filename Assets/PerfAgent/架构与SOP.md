@@ -72,10 +72,11 @@ sequenceDiagram
     participant G as 持久化(L0)
 
     U->>W: 点「跟随采集」
-    W->>C: 借 Profiler + 记窗口起点
-    C-->>W: 实时帧率波形（4 Hz）
-    U->>U: 自己进 Play 操作（工具不控制 Play）
-    U->>W: 再点一次（或退出 Play）
+    W->>C: 量编辑器开销基线（只能在编辑模式量，约 1~4 秒）
+    W->>W: 基线量完 → 替你按一次 Play（可在设置里关掉）
+    C-->>W: 实时帧率波形（4 Hz）+ 面板收成细条
+    U->>U: 只管玩几秒（工具不再插手）
+    U->>W: 退出 Play（或点细条上的「停止采集」）
     W->>C: 停止 + 读面板数据
     W->>A: 汇总 → 跑规则 → 生成修复计划
     A->>G: 写 index.jsonl（分析目录）
@@ -200,7 +201,7 @@ JsonlAnalysisStore.Current = new SqliteAnalysisStore();   // 启动处替换
 | 阶段 | 输入 | 允许的工具 | 输出 | 门禁 |
 |---|---|---|---|---|
 | **S1 目标确认** | 用户描述（掉帧 / 卡顿 / 内存涨） | `list_snapshots` `load_snapshot` `get_budget` | 要查什么、范围是什么 | 目标不明确就先问，不许瞎查 |
-| **S2 采集（人操作）** | — | **无**（工具不控制 Play） | 引导用户点「跟随采集」并自己操作 | 工具**没有**替用户进 Play 的入口 |
+| **S2 采集（人操作）** | — | **无**（MCP 侧不控制 Play） | 引导用户点「跟随采集」：面板会量基线并**自动进 Play** 开始记录，用户只管玩 | 自动进 Play 只属于**人类按钮**的行为（可在设置里关）；MCP / AI 侧**没有**进 Play 的入口 |
 | **S3 只读分析** | 快照 | `get_summary/metrics/frames/markers/findings/asset_issues/scene_issues/code_issues` | 结论候选 + 证据 | 没有证据不下结论 |
 | **S4 提方案** | 结论 | `get_fix_plan` `diff_snapshots` `run_rules` `rerun_audit` | 动作清单（目标 / 影响面 / 风险 / 回滚） | 每条动作必须四要素齐全 |
 | **S5 等同意** | 动作清单 | **无** | 交给用户确认 | **停**。AI 不得自行继续 |
@@ -418,7 +419,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 ### 10.10 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 85 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 86 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|
@@ -436,6 +437,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `StripGeometryGuardsAgainstTinyRestore` | 细条尺寸不得被当成「收起前的尺寸」（否则采集结束会恢复成一个废窗口）；尺寸串解析拒绝 0x0 / NaN / 字段数不对 |
 | `SessionRestartRebasesTheStartFrame` | 面板帧号往回跳（会话重启）时必须重定采集起点，否则帧数永远是 0；正常递增时不得乱动起点 |
 | `LiveStatsRebaseOnFrameIndexRestart` | 实时曲线同样重定起点，重启后从新起点重新起算而不是恒为 0 |
+| `AutoPlayGateEnterPlayOnlyWhenItShould` | 自动进 Play 的四种情形：设置关掉 / 已取消 / 已在 Play / 正在切换，一律不许动手 |
 
 ---
 
