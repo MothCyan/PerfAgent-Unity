@@ -342,6 +342,52 @@ namespace PerfAgent.UI
             return l;
         }
 
+        /// <summary>表单里的小分组标题（比正文矮一档、淡一点）。</summary>
+        public static Label GroupLabel(string text)
+        {
+            var l = new Label(text);
+            l.style.fontSize = SizeSmall;
+            l.style.color = TextFaint;
+            l.style.unityFontStyleAndWeight = FontStyle.Bold;
+            l.style.marginTop = 6;
+            l.style.marginBottom = 2;
+            return l;
+        }
+
+        /// <summary>
+        /// 表单行：左侧标签吃掉剩余宽度，右侧定宽输入框，**数值右对齐**。
+        /// 之所以不用「输入框 flexGrow 拉满」：那样一行会从标签一直拉到卡片右边，
+        /// 中间大片空白、数字还靠在左边，看着像没对齐的草稿。
+        /// </summary>
+        public static VisualElement FormRow(string label, VisualElement field, float fieldWidth = 96f)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems = Align.Center;
+            row.style.marginBottom = 3;
+
+            var lbl = new Label(label);
+            lbl.style.flexGrow = 1;
+            lbl.style.flexShrink = 1;
+            lbl.style.fontSize = SizeSmall;
+            lbl.style.color = TextDim;
+            lbl.style.whiteSpace = WhiteSpace.NoWrap;
+            row.Add(lbl);
+
+            if (field != null)
+            {
+                field.style.width = fieldWidth;
+                field.style.flexGrow = 0;
+                field.style.flexShrink = 0;
+                // DoubleField / IntegerField 的输入本体在各版本里可能是 TextField，也可能叫 unity-text-input；
+                // 两个都试一下，取不到就算了（不影响功能，只是不右对齐）
+                var input = field.Q("unity-text-input") ?? field.Q<TextField>();
+                if (input != null) input.style.unityTextAlign = TextAnchor.MiddleRight;
+                row.Add(field);
+            }
+            return row;
+        }
+
         /// <summary>富文本的严重度标记（嵌在标题里）。</summary>
         public static string SeverityTag(string label, Color color)
         {

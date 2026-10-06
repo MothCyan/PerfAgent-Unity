@@ -21,6 +21,8 @@ namespace PerfAgent.UI
         VisualElement _liveHost;
         VisualElement[] _liveBars;
         Label _liveLabel;
+        /// <summary>预算表单的容器：恢复默认后要整体重建，否则输入框里还是旧值。</summary>
+        VisualElement _budgetHost;
         ScrollView _snapshotHost;
         ScrollView _detailHost;
         Label _transcript;
@@ -235,7 +237,9 @@ namespace PerfAgent.UI
             left.Add(snapCard);
 
             var budgetCard = Theme.Card("性能预算", "改完即时重算");
-            budgetCard.Add(BuildBudgetEditor());
+            _budgetHost = new VisualElement();
+            _budgetHost.Add(BuildBudgetEditor());
+            budgetCard.Add(_budgetHost);
             left.Add(budgetCard);
 
             // 右栏：明细 + 会话
@@ -507,40 +511,62 @@ namespace PerfAgent.UI
             var box = new VisualElement();
             var b = PerfAgentSettings.Config.budget;
 
-            box.Add(BudgetField("目标帧率", b.targetFrameRate, delegate (double v) { b.targetFrameRate = (float)v; Apply(); }));
+            box.Add(Theme.GroupLabel("目标与帧"));
+            box.Add(BudgetField("目标帧率 (fps)", b.targetFrameRate, delegate (double v) { b.targetFrameRate = (float)v; Apply(); }));
+            box.Add(BudgetField("每帧分配 (B)", b.maxManagedAllocBytesPerFrame, delegate (double v) { b.maxManagedAllocBytesPerFrame = (long)v; Apply(); }));
+
+            box.Add(Theme.GroupLabel("渲染"));
             box.Add(BudgetField("Draw Call", b.maxDrawCalls, delegate (double v) { b.maxDrawCalls = (int)v; Apply(); }));
             box.Add(BudgetField("SetPass Call", b.maxSetPassCalls, delegate (double v) { b.maxSetPassCalls = (int)v; Apply(); }));
             box.Add(BudgetField("三角面", b.maxTriangles, delegate (double v) { b.maxTriangles = (long)v; Apply(); }));
-            box.Add(BudgetField("每帧分配 (B)", b.maxManagedAllocBytesPerFrame, delegate (double v) { b.maxManagedAllocBytesPerFrame = (long)v; Apply(); }));
+
+            box.Add(Theme.GroupLabel("内存"));
             box.Add(BudgetField("纹理内存 (MB)", b.maxTextureMemoryMB, delegate (double v) { b.maxTextureMemoryMB = (long)v; Apply(); }));
             box.Add(BudgetField("TempAlloc (MB)", b.maxTempAllocatorMB, delegate (double v) { b.maxTempAllocatorMB = (long)v; Apply(); }));
-            box.Add(Theme.Hint("这些阈值是诊断的判定标准；改动会立刻重算当前快照。"));
+
+            var foot = new VisualElement();
+            foot.style.flexDirection = FlexDirection.Row;
+            foot.style.marginTop = 6;
+            foot.Add(Theme.Ghost("恢复默认预算", ResetBudget));
+            box.Add(foot);
+
+            box.Add(Theme.Hint("这些阈值是诊断的判定标准；改动会立刻重算当前快照。更完整的内存/阴影/音频预算在 Project Settings > PerfAgent 里。"));
             return box;
+        }
+
+        /// <summary>恢复默认预算（按钮点完先重建表单，否则输入框里还是旧值）。</summary>
+        void ResetBudget()
+        {
+            var b = PerfAgentSettings.Config.budget;
+            var d = new PerfBudget();
+            b.targetFrameRate = d.targetFrameRate;
+            b.maxManagedAllocBytesPerFrame = d.maxManagedAllocBytesPerFrame;
+            b.maxDrawCalls = d.maxDrawCalls;
+            b.maxSetPassCalls = d.maxSetPassCalls;
+            b.maxTriangles = d.maxTriangles;
+            b.maxTextureMemoryMB = d.maxTextureMemoryMB;
+            b.maxTempAllocatorMB = d.maxTempAllocatorMB;
+
+            Apply();
+            if (_budgetHost != null)
+            {
+                _budgetHost.Clear();
+                _budgetHost.Add(BuildBudgetEditor());
+            }
+            SetStatus("预算已恢复默认值");
         }
 
         static VisualElement BudgetField(string label, double value, Action<double> onChange)
         {
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.alignItems = Align.Center;
-
-            var lbl = new Label(label);
-            lbl.style.width = 108;
-            lbl.style.fontSize = Theme.SizeSmall;
-            lbl.style.color = Theme.TextDim;
-            row.Add(lbl);
-
             var field = new DoubleField();
             field.value = value;
-            field.style.flexGrow = 1;
+            field.style.fontSize = Theme.SizeSmall;
             field.RegisterValueChangedCallback(delegate (ChangeEvent<double> e)
             {
                 if (Math.Abs(e.newValue - e.previousValue) < 1e-9) return;
                 onChange(e.newValue);
             });
-            row.Add(field);
-            row.style.marginBottom = 2;
-            return row;
+            return Theme.FormRow(label, field);
         }
 
         void Apply()
