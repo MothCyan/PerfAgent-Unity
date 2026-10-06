@@ -62,7 +62,10 @@
 
 ## 想亲眼验证它准不准：工程内的前后对照样例
 
-工程里带了一个**单场景小游戏的两份实现**（同一个玩法，都直接放在 `Assets/` 下，不用另开工程）：
+工程里带了一个**单场景小游戏的两份实现**（同一个玩法，都直接放在 `Assets/` 下，不用另开工程）。
+玩法、场景、美术、音效全部来自开源项目 **[`dgkanatsios/AngryBirdsStyleGame`](https://github.com/dgkanatsios/AngryBirdsStyleGame)**
+（作者 Dimitris-Ilias Gkanatsios，**MIT** © 2016，许可原文在样例目录的 `License.md`）——
+我们只改了「每帧开销」，玩法一行没动：
 
 - `Assets/PerfAgentSample/Before/`：`Scenes/AngryBirdsBefore.unity` + `Scripts/Before*.cs`，
   优化之前的现场（每帧 `new List`、每帧 LINQ、`Camera.main`、每帧 `GetComponent`、每帧 `Debug.Log`、
@@ -74,13 +77,32 @@
 After 那一份的 asset GUID 整体重发过，因此能同时待在一个工程里互不干扰；两个场景都已登记在 Build Settings 里。
 
 ```
-打开 Before/Scenes/AngryBirdsBefore.unity → Play →「跟随采集」玩 20~30 秒 → 生成快照
+打开 Before/Scenes/AngryBirdsBefore.unity → Play →「跟随采集」玩 5~10 秒 → 退出 Play 生成快照
   → 打开 After/Scenes/AngryBirdsAfter.unity → 再采一份
   → 「对比」页选这两份快照
 ```
 
+> 只玩 5~10 秒是因为**可分析的窗口受 Profiler 面板历史长度限制**（默认 300 帧，高帧率下约 1 秒）。
+
 样例需要的 Tag（`Bird`/`Brick`/`Pig`）与 Sorting Layer 已经写进 `ProjectSettings/`，
 遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自建宿主对象且只在各自场景里启动，所以打开场景 Play 就能用。
+
+### 实测对比（编辑器内测量，2026-10-06 · Unity 2022.3.62f2c1 · RTX 5060 Laptop）
+
+| 指标 | 优化前 | 优化后 | 变化 |
+|---|---:|---:|---|
+| 项目每帧托管分配 | 29 634 B（越过归因地板 → 报「严重」） | 15 911 B（未越过地板） | **−46 %** |
+| 每帧分配 P95 | 38 320 B | 15 467 B | **−60 %** |
+| 帧耗时均值 | 8.15 ms | 2.43 ms | −70 % |
+| 帧耗时峰值 | **133.52 ms**（`GC.Collect` 尖峰） | 3.23 ms | 尖峰消失 |
+| 实际 FPS | 122.71 | 412.16 | ×3.4 |
+| 每帧类代码问题（当前场景目录） | 41 处 | **0 处** | 清零 |
+| Draw Call / 三角面 | 14 / 564 | 13 / 466 | 持平（同一批美术） |
+
+三点读表须知：**① 代码问题看「每帧类」那一行**（扫描是工程级的，两份会互相扫到对方脚本，总数都是 59）；
+**② 分配看两份的差值**，编辑器里的绝对值含编辑器开销（空场景 Play 就有 ~14 KB/帧），工具会写明「未越过归因闸门」；
+**③ 资源类结论两份必然相同**（同一批资源、工程级审计）。
+仓库根目录的 [`README.md`](../../README.md) 有完整版对比与背景说明。
 
 - 缺陷编号与修法逐条对照：`Assets/PerfAgentSample/PERF-FAULTS.md`
 - 上游出处、MIT 许可与我们改了什么：`Assets/PerfAgentSample/NOTICE.md`
