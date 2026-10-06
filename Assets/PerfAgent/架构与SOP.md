@@ -488,3 +488,39 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 - 工具调用流程（多轮 + 工具结果回灌）本来就不适合推理型模型，文档口径是：**推荐普通对话模型**。
 一句话分工：**本地给事实与证据（可回溯、不联网），AI 给因果、取舍与人话（联网、由你开）。**
 单纯「有没有超预算 / 数字是多少」这类问题，本地答得更可靠 —— 数字是算出来的，不会被模型改写。
+
+### 11.12 前后对照样例工程（`Samples/`）
+
+`Tests~/Standalone` 的最小用例只能验证**纯逻辑**；「同一个游戏，优化前 vs 优化后」这种现场只能靠真工程。
+上游选的是 `dgkanatsios/AngryBirdsStyleGame`（MIT，**只有一个场景**，Unity 2021.3，2.2 MB 级）：
+
+- `Samples/AngryBirds_before/`：上游原样 + 一份刻意写成反面样板的 `TelemetryMonitor.cs`（F1–F14）
+  + `GameManager` 的每帧日志 / `OnGUI` 拼接（F15、F16）；
+- `Samples/AngryBirds_after/`：**同样的脚本文件清单**、同样的玩法，逐条修掉（`PERF-FAULTS.md` 的 G1–G12）。
+
+四件必须知道的事：
+
+1. **必须放在仓库根的 `Samples/`，不能放 `Assets/` 下**。两份工程有同名脚本（`GameManager`、`Bird`…），
+   放进 `Assets/` 会被同一个工程一次编译两份 → 类名冲突；Unity 也只会导入 `Assets/` 与 `Packages/`，根目录天然免疫。
+2. 插件通过 `Packages/manifest.json` 的 `"com.night.perfagent": "file:../../Assets/PerfAgent"` 挂上，
+   **不需要把插件复制进样例工程**，插件改了样例立刻生效。
+3. 注入的缺陷必须落在**每帧方法体内**（`Update`/`OnGUI`/`OnCollisionEnter2D`…）才会被脚本反模式扫描抓到；
+   After 里那种「每秒刷新一次的 `FindObjectsOfType`」写在普通方法里，按判据不算反模式 —— 这正是
+   「静态扫描」与「动态采集」互补的分界（`PERF-FAULTS.md` 第五节）。
+4. 遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自己起隐藏宿主对象，**不改场景文件**，
+   避免为了挂一个组件去手改 `.unity` 的 YAML（那样极易把场景改坏）。
+
+## 十二、离线验证与工具链（本机实测过的坑）
+
+- **编译校验的引用集合要和 Unity 生成的 `Assembly-CSharp.csproj` 对齐**：
+  `Data\Managed\UnityEngine\UnityEngine.dll`（门面）+ 全部 `*Module.dll` 可以同时引用，
+  只排除 `UnityEditor.dll`。早先为躲 CS0433 把门面排掉，结果一引用 DOTween.dll 就报
+  `CS0012 类型 Vector3 在未引用的程序集 UnityEngine 中定义`（第三方 dll 的签名解析不到）。
+- 样例工程两份都要过一遍离线编译：Before 期望 exit=0 但**留 4 条过时 API 警告**（这本身就是「优化之前」的证据），
+  After 期望 exit=0 **且 0 警告**。
+- 从 GitHub 取上游工程：本机 `git clone` 容易长时间卡住（进程会挂住终端），
+  `Invoke-WebRequest -OutFile` 在 PS 5.1 也会因进度条渲染报假异常 ——
+  用 Python `urllib` 直接下 `codeload.github.com/<owner>/<repo>/zip/refs/heads/<branch>` 最省事。
+- `<你的工程>/Samples/**` 这类**嵌套 Unity 工程**打开后会产生自己的 `Library/`、`Temp/`、`Logs/`，
+  根 `.gitignore` 里要显式加 `/Samples/*/[Ll]ibrary/` 之类的规则（原有的 `/Library/` 只锚定根目录）。
+

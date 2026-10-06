@@ -60,6 +60,21 @@
 直接粘进 issue、聊天窗口，或者丢给外部 AI 继续追问。
 复制的内容与「导出 MD」是**同一份**，所以看到的和导出的一定一致。
 
+## 想亲眼验证它准不准：前后对照样例工程
+
+仓库根的 `Samples/` 里放了一个**单场景小游戏的两种版本**——同一个玩法，两套完整工程：
+
+- `Samples/AngryBirds_before/`：优化之前的现场（每帧 `new List`、每帧 LINQ、`Camera.main`、
+  每帧 `GetComponent`、每帧 `Debug.Log`、每帧 `Instantiate/Destroy`、手动 `GC.Collect`……共 16 处编号缺陷）；
+- `Samples/AngryBirds_after/`：逐条修完之后（**功能完全一致**，每帧零分配、0 条编译警告）。
+
+用法：用 Unity 打开 Before → Play →「跟随采集」玩 20~30 秒 → 生成快照；
+再打开 After 同样采一份 → 在**对比**里选这两份快照，直接看帧时间 / 每帧分配 / 结论条数的变化。
+
+- 缺陷编号与修法逐条对照：`Samples/PERF-FAULTS.md`
+- 上游出处、MIT 许可与我们改了什么：`Samples/NOTICE.md`
+- 怎么打开、怎么跑：`Samples/README.md`
+
 ## 为什么要接 AI 做 Agent（以及没有 AI 时它是什么）
 
 先说结论：**这个工具在没有任何 LLM 的情况下就是完整可用的** —— 规则引擎独立产出结论、证据链与修复计划，
