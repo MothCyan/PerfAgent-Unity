@@ -204,6 +204,16 @@ namespace PerfAgent.Core
         public string suggestion = "";
         public string severity = Severity.Info;
 
+        /// <summary>
+        /// 是否属于「本次采集场景所在目录」的脚本。
+        ///
+        /// 为什么需要它：静态扫描是**工程级**的（扫 Assets/**/*.cs），而一个工程里可能同时存在
+        /// 同一玩法的多个副本（本仓库的 PerfAgentSample/{Before,After} 就是）。
+        /// 那样两份快照的「代码问题数」会完全一样，前后对比直接失效。
+        /// 有了这个标记，结论与报告就能把「当前这一版」和「同工程里的其它副本」分开说。
+        /// </summary>
+        public bool inSceneScope;
+
         /// <summary>取出真正的反模式 id（去掉 "方法名 + " 前缀）。</summary>
         public static string BasePattern(string pattern)
         {
@@ -304,6 +314,14 @@ namespace PerfAgent.Core
         public List<AssetIssue> assetIssues = new List<AssetIssue>();
         public List<SceneIssue> sceneIssues = new List<SceneIssue>();
         public List<CodeIssue> codeIssues = new List<CodeIssue>();
+
+        /// <summary>
+        /// 采集时「当前场景所在目录」（形如 <c>Assets/PerfAgentSample/Before/</c>），空串表示没做过作用域标记。
+        ///
+        /// 不能靠「至少有一条问题命中了作用域」来判断 —— 完全可能本次采集的那份代码恰好一条问题都没有，
+        /// 而问题全在另一份副本里，那正是最需要区分的场景。
+        /// </summary>
+        public string codeScopeRoot = "";
         public List<PerfFinding> findings = new List<PerfFinding>();
         public List<string> notes = new List<string>();
         public List<string> capturedSources = new List<string>();

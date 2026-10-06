@@ -29,6 +29,7 @@ namespace PerfAgent.RuleRegression
                 EmptyProjectPlayModeAllocStaysUnattributed,
                 TinyCaptureWindowSuppressesSampleDependentVerdicts,
                 ZeroFrameCaptureIsReportedAsError,
+                CodeFindingsAreSplitBySceneDirectory,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
                 ProjectAllocAboveNoiseBandStillFires,
                 ExcessiveDrawCalls,
@@ -216,6 +217,77 @@ namespace PerfAgent.RuleRegression
             ok.capturedFrameCount = 600;
             Equal(0, Evaluate(ok).FindAll(f => f.id == "capture_no_frames").Count,
                 "有帧的快照不能报「没有采到帧」");
+        }
+
+        /// <summary>
+        /// 工程里同时存在同一玩法的多份副本时（本仓库 Assets/PerfAgentSample 的 Before/After），
+        /// 静态扫描是工程级的 —— 不区分就会让「优化前 vs 优化后」两份报告列出同一批问题，
+        /// 看上去「优化了但问题数一点没变」。不属于本次采集场景目录的问题必须标明并降级。
+        /// </summary>
+        static void CodeFindingsAreSplitBySceneDirectory()
+        {
+            // 1) 这种写法只存在于另一份副本：降级为 Info、标题写明，证据给出 0 / 1 拆分
+            var other = CleanSnapshot();
+            other.codeScopeRoot = "Assets/PerfAgentSample/After/";
+            other.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/PerfAgentSample/Before/Scripts/BeforeTelemetryMonitor.cs",
+                line = 42, pattern = "Update + tag_compare", severity = Severity.Error,
+                snippet = "Update: if (go.tag == \"Bird\")", suggestion = "用 CompareTag",
+                inSceneScope = false
+            });
+            var orphan = Single(other, f => f.id == "code_Update___tag_compare");
+            Equal(Severity.Info, orphan.severity, "全在其它目录里的代码问题要降级成 Info");
+            True(orphan.title.IndexOf("不属于本次采集的场景目录", StringComparison.Ordinal) >= 0,
+                "标题要写明它不属于本次采集的场景");
+            EvidenceContains(orphan, "分组（当前场景目录 / 其它目录）", "0 / 1");
+
+            // 2) 当前副本里也有：保持原级别，给出 1 / 1 拆分，跳转指向当前副本
+            var both = CleanSnapshot();
+            both.codeScopeRoot = "Assets/PerfAgentSample/After/";
+            both.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/PerfAgentSample/Before/Scripts/BeforeTelemetryMonitor.cs",
+                line = 42, pattern = "Update + tag_compare", severity = Severity.Error,
+                snippet = "Update: if (go.tag == \"Bird\")", suggestion = "用 CompareTag",
+                inSceneScope = false
+            });
+            both.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/PerfAgentSample/After/Scripts/AfterTelemetryMonitor.cs",
+                line = 88, pattern = "Update + tag_compare", severity = Severity.Error,
+                snippet = "Update: if (go.CompareTag(\"Bird\"))", suggestion = "用 CompareTag",
+                inSceneScope = true
+            });
+            var mixed = Single(both, f => f.id == "code_Update___tag_compare");
+            Equal(Severity.Error, mixed.severity, "当前副本里也有时不能被降级");
+            EvidenceContains(mixed, "分组（当前场景目录 / 其它目录）", "1 / 1");
+            True(mixed.jumpTo.StartsWith("Assets/PerfAgentSample/After/", StringComparison.Ordinal),
+                "跳转要指向属于当前场景的那一条，而不是另一份副本：" + mixed.jumpTo);
+
+            // 3) 没打过标记（旧快照、手写的快照）行为不能变
+            var legacy = CleanSnapshot();
+            legacy.codeIssues.Add(new CodeIssue
+            {
+                file = "Assets/Scripts/GameManager.cs", line = 7,
+                pattern = "Update + linq", severity = Severity.Warn,
+                snippet = "Update: x.Where(...)", suggestion = "去掉 LINQ"
+            });
+            var old = Single(legacy, f => f.id == "code_Update___linq");
+            Equal(Severity.Warn, old.severity, "没有作用域标记时必须保持旧行为");
+            True(old.title.IndexOf("不属于本次采集的场景目录", StringComparison.Ordinal) < 0,
+                "没有作用域标记时不能乱扣帽子");
+        }
+
+        static void EvidenceContains(PerfFinding f, string metric, string value)
+        {
+            for (int i = 0; i < f.evidence.Count; i++)
+            {
+                if (f.evidence[i].metric == metric && f.evidence[i].value == value) return;
+            }
+            var sb = new System.Text.StringBuilder("证据里找不到 " + metric + "=" + value + "；实有：");
+            for (int i = 0; i < f.evidence.Count; i++) sb.Append(f.evidence[i].ToString()).Append("; ");
+            throw new InvalidOperationException(sb.ToString());
         }
 
         /// <summary>

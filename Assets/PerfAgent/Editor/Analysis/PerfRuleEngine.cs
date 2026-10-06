@@ -84,7 +84,8 @@ namespace PerfAgent.Analysis
                 string.Format(CultureInfo.InvariantCulture,
                     "均值 / P95 / 峰值 / 每帧分配这类量需要足够多的帧才有意义（门槛 {0} 帧）。"
                     + "本次窗口只录到 {1} 帧，数值会被个别帧主导，所以规则侧不下判断；"
-                    + "资源、场景、代码这类不依赖帧数据的审计结论不受影响，照常给出。",
+                    + "资源、场景、代码这类不依赖帧数据的审计结论不受影响，照常给出。"
+                    + "**因此这份数据不能用来和其它快照做优化前后的对比**，请重新采一次再比。",
                     PerfSnapshot.MinFramesForStats, window),
                 "跟随采集时多操作几秒（建议 ≥5 秒）：它会一直录到你退出 Play 或手动停止。", 0.9f);
             Ev(f, "frame_capture", "采集窗口帧数", window.ToString(CultureInfo.InvariantCulture), "帧",
@@ -622,26 +623,73 @@ namespace PerfAgent.Analysis
         {
             if (s.codeIssues == null || s.codeIssues.Count == 0) return;
 
+            // 静态扫描是工程级的：工程里可能同时存在同一玩法的多份副本（本仓库的样例就是）。
+            // 不区分就会让「优化前 vs 优化后」两份报告列出同一批问题，看上去完全一样。
+            // codeScopeRoot 非空 = 采集时确实做过作用域标记，这时才能区分「本次采集的这一版」与其它副本。
+            bool anyScoped = !string.IsNullOrEmpty(s.codeScopeRoot);
+
             var groups = GroupBy(s.codeIssues, x => x.pattern);
             foreach (var g in groups)
             {
                 var first = g.Value[0];
-                var f = New("code_" + Sanitize(first.pattern), "代码",
-                    Severity.Rank(first.severity) >= 3 ? Severity.Error : first.severity,
-                    string.Format(CultureInfo.InvariantCulture, "每帧方法中出现 {0}（{1} 处）", first.pattern, g.Value.Count),
-                    "这些写法在 Update/回调中每帧执行，是每帧分配与隐性开销的主要来源。",
-                    first.suggestion, Math.Min(0.9f, 0.5f + g.Value.Count * 0.05f));
-                f.fixCode = CodeIssue.BasePattern(first.pattern);
-                f.jumpTo = first.file + ":" + first.line;
+                int inScope = 0;
+                for (int i = 0; i < g.Value.Count; i++)
+                {
+                    if (g.Value[i].inSceneScope) inScope++;
+                }
 
+                bool onlyOtherCopies = anyScoped && inScope == 0;
+                string title = string.Format(CultureInfo.InvariantCulture, "每帧方法中出现 {0}（{1} 处）",
+                    first.pattern, g.Value.Count);
+                var f = New("code_" + Sanitize(first.pattern), "代码",
+                    onlyOtherCopies ? Severity.Info : (Severity.Rank(first.severity) >= 3 ? Severity.Error : first.severity),
+                    onlyOtherCopies ? title + "，但都不属于本次采集的场景目录" : title,
+                    onlyOtherCopies
+                        ? "这些位置全在同工程里的**其它目录**（另一份副本 / 公共目录），本次采集的场景跑不到它们 —— "
+                          + "对比前后时请忽略这一条，它不是你这次要看的那份代码。"
+                        : "这些写法在 Update/回调中每帧执行，是每帧分配与隐性开销的主要来源。",
+                    first.suggestion,
+                    onlyOtherCopies ? 0.6f : Math.Min(0.9f, 0.5f + g.Value.Count * 0.05f));
+                f.fixCode = CodeIssue.BasePattern(first.pattern);
+
+                // 跳转优先瞄「属于当前场景」的那一条，否则点进去会跳到另一份副本上。
+                var anchor = first;
+                if (inScope > 0)
+                {
+                    for (int i = 0; i < g.Value.Count; i++)
+                    {
+                        if (g.Value[i].inSceneScope) { anchor = g.Value[i]; break; }
+                    }
+                }
+                f.jumpTo = anchor.file + ":" + anchor.line;
+
+                // 先列属于当前场景的，再补其它目录的（没打过标记时顺序不变，与旧行为一致）。
                 int shown = 0;
                 for (int i = 0; i < g.Value.Count && shown < 6; i++)
                 {
                     var c = g.Value[i];
+                    if (!c.inSceneScope) continue;
                     Ev(f, "scan_scripts", "位置", c.file + ":" + c.line, "", "", c.snippet);
                     shown++;
                 }
+                for (int i = 0; i < g.Value.Count && shown < 6; i++)
+                {
+                    var c = g.Value[i];
+                    if (c.inSceneScope) continue;
+                    Ev(f, "scan_scripts", "位置", c.file + ":" + c.line, "", "", c.snippet);
+                    shown++;
+                }
+
                 Ev(f, "scan_scripts", "出现次数", g.Value.Count.ToString(CultureInfo.InvariantCulture), "处", "0 处", "Assets/**/*.cs");
+                if (anyScoped && inScope != g.Value.Count)
+                {
+                    Ev(f, "scan_scripts", "分组（当前场景目录 / 其它目录）",
+                        inScope.ToString(CultureInfo.InvariantCulture) + " / "
+                        + (g.Value.Count - inScope).ToString(CultureInfo.InvariantCulture),
+                        "处", "0 处",
+                        "当前场景目录下的脚本可直接用于前后对比（当前场景目录 = " + s.codeScopeRoot
+                        + "）；其它目录是同工程里的副本");
+                }
                 outList.Add(f);
             }
         }

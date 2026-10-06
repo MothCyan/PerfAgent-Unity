@@ -26,6 +26,7 @@ namespace PerfAgent.Core
         const string PrevEnabledKey = "PerfAgent.Profiler.PrevEnabled";
         const string PrevEditorKey = "PerfAgent.Profiler.PrevProfileEditor";
         const string PrevHistoryKey = "PerfAgent.Profiler.PrevHistoryLength";
+        const string WarnedHistoryKey = "PerfAgent.Profiler.WarnedShortHistory";
 
         /// <summary>
         /// 我们记录期间允许的面板历史长度。
@@ -75,7 +76,23 @@ namespace PerfAgent.Core
             {
                 if (!ProfilerApi.Enabled) ProfilerApi.Enabled = true;
                 if (needProfileEditor && !ProfilerApi.ProfileEditor) ProfilerApi.ProfileEditor = true;
-                if (ProfilerApi.MaxHistoryLength > HistoryFrames) ProfilerApi.MaxHistoryLength = HistoryFrames;
+
+                // 面板历史必须是「我们想要的那个值」，不能只在它更大时才压小。
+                // 实测踩过：反射取不到 maxHistoryLength 时 getter 返回兑底值 300，300 < 2000 → 不设置，
+                // 面板就只保留 300 帧；再叠加 1 秒暖机（高帧率下 ≈260 帧）后可用窗口只剩几十帧，
+                // 小于统计门槛 → 动态结论全部被跳过 → 前后对比直接失效。
+                if (ProfilerApi.MaxHistoryLength != HistoryFrames) ProfilerApi.MaxHistoryLength = HistoryFrames;
+
+                // 调不动就说清楚（每次记录只唠叨一次）：窗口上限会被面板历史限制，
+                // 这是采集端能提前告知的，不能让用户从「报告里没有结论」反向猜。
+                int actual = ProfilerApi.MaxHistoryLength;
+                if (actual != HistoryFrames && !SessionState.GetBool(WarnedHistoryKey, false))
+                {
+                    SessionState.SetBool(WarnedHistoryKey, true);
+                    Debug.LogWarning("[PerfAgent] 无法把 Profiler 面板历史改成 " + HistoryFrames + " 帧（当前 "
+                        + actual + " 帧）：可分析的窗口最多就这么多帧。本次采集请只玩 2～4 秒，"
+                        + "否则较早的帧会被挤出面板、窗口起点会退化成面板里最早的那一帧，报告里的动态指标可能因为样本不够而被跳过。");
+                }
             }
             catch { }
         }

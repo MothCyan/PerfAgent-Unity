@@ -146,6 +146,8 @@ namespace PerfAgent.Collectors
             }
 
             int scanned = 0, skipped = 0;
+            string sceneScope = SceneScopeRoot();          // "Assets/PerfAgentSample/Before/"，空串 = 判定不了
+            s.codeScopeRoot = sceneScope;
             for (int i = 0; i < files.Count; i++)
             {
                 string full = files[i].Replace('\\', '/');
@@ -156,17 +158,81 @@ namespace PerfAgent.Collectors
                 {
                     var fi = new FileInfo(full);
                     if (fi.Length > MaxFileBytes) { skipped++; continue; }
+                    int before = s.codeIssues.Count;
                     ScanFile(s, root, full, File.ReadAllText(full));
+                    if (sceneScope.Length > 0)
+                    {
+                        for (int k = before; k < s.codeIssues.Count; k++)
+                            s.codeIssues[k].inSceneScope = IsInScope(s.codeIssues[k].file, sceneScope);
+                    }
                     scanned++;
                 }
                 catch { skipped++; }
             }
 
+            int inScope = 0;
+            if (sceneScope.Length > 0)
+            {
+                for (int i = 0; i < s.codeIssues.Count; i++)
+                    if (s.codeIssues[i].inSceneScope) inScope++;
+            }
+
             s.SetMetric("已扫描脚本", "个", scanned, "Assets/**/*.cs（不含插件自身与 Editor 专用代码）");
-            s.SetMetric("代码问题数", "个", s.codeIssues.Count, "每帧方法体内的反模式");
+            s.SetMetric("代码问题数", "个", s.codeIssues.Count, "整个工程 Assets/**/*.cs（含同工程里的其它副本）");
+            if (sceneScope.Length > 0)
+            {
+                s.SetMetric("代码问题数（当前场景目录）", "个", inScope,
+                            "只看 " + sceneScope + " 下的脚本 —— 前后对比看这一行");
+                if (inScope != s.codeIssues.Count)
+                {
+                    s.AddNote("静态扫描是工程级的：" + (s.codeIssues.Count - inScope)
+                              + " 处问题落在 " + sceneScope + " 以外的脚本（同工程里的其它副本/公共目录）。"
+                              + "对比前后两份报告时，请只看「代码问题数（当前场景目录）」以及带 ★ 的行；"
+                              + "两张表里相同的那些行往往是同一批“不属于本次采集场景”的代码。");
+                }
+            }
             if (skipped > 0)
                 s.AddNote("脚本扫描跳过 " + skipped + " 个文件（插件自身 / Editor 专用代码 / 第三方 / 生成代码 / 超大文件）。"
                           + "本插件只对自己安装目录以外的、会进到玩家构建里的脚本报问题。");
+        }
+
+        /// <summary>
+        /// 「本次采集场景所在目录」（形如 <c>Assets/PerfAgentSample/Before/</c>），判定不出来时返回空串。
+        ///
+        /// 对比「优化前 vs 优化后」时只该看这个目录下的脚本问题：工程里可能同时存在同一玩法的多份副本，
+        /// 不区分就会让两份报告列出同一批问题，看上去“一模一样”。
+        ///
+        /// 取法：场景的父目录若是约定的 <c>Scenes</c>，就取它的上一层（<c>Assets/Game/Scenes/Main.unity</c>
+        /// → <c>Assets/Game/</c>）；否则退回场景自己的目录。
+        /// </summary>
+        static string SceneScopeRoot()
+        {
+            try
+            {
+                var active = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene();
+                string scene = active.IsValid() ? (active.path ?? "") : "";
+                if (scene.Length == 0) return "";
+                scene = scene.Replace('\\', '/');
+                int slash = scene.LastIndexOf('/');
+                if (slash <= 0) return "";
+
+                string dir = scene.Substring(0, slash + 1);                 // Assets/Game/Scenes/
+                string trimmed = dir.Substring(0, dir.Length - 1);          // Assets/Game/Scenes
+                int up = trimmed.LastIndexOf('/');
+                if (up <= 0) return dir;
+                string leaf = trimmed.Substring(up + 1);
+                string parent = trimmed.Substring(0, up + 1);               // Assets/Game/
+                if (string.Equals(leaf, "Scenes", StringComparison.OrdinalIgnoreCase)) return parent;
+                return dir;
+            }
+            catch { return ""; }
+        }
+
+        static bool IsInScope(string assetRelativePath, string scopeRoot)
+        {
+            if (string.IsNullOrEmpty(assetRelativePath) || string.IsNullOrEmpty(scopeRoot)) return false;
+            string f = assetRelativePath.Replace('\\', '/').ToLowerInvariant();
+            return f.StartsWith(scopeRoot.ToLowerInvariant(), StringComparison.Ordinal);
         }
 
         /// <summary>

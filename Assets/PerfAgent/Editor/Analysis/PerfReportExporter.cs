@@ -31,7 +31,8 @@ namespace PerfAgent.Analysis
             try
             {
                 var asm = typeof(PerfReportExporter).Assembly;
-                string ver = (asm.GetName().Version ?? new Version(0, 0)).ToString();
+                string ver = PackageVersion(asm);
+                if (string.IsNullOrEmpty(ver)) ver = (asm.GetName().Version ?? new Version(0, 0)).ToString();
                 string built = "未知";
                 try
                 {
@@ -45,6 +46,34 @@ namespace PerfAgent.Analysis
                 return "v" + ver + "（程序集 " + built + "）";
             }
             catch { return "未知"; }
+        }
+
+        /// <summary>
+        /// 插件版本取 UPM 包的 <c>package.json</c> 里的 version，而不是程序集版本。
+        ///
+        /// 实测踩过：报告头一直印 <c>PerfAgent v0.0.0.0</c> —— 因为 asmdef 里没写版本，
+        /// 程序集版本默认就是 0.0.0.0，看到这个数字等于没看到。
+        /// </summary>
+        static string PackageVersion(System.Reflection.Assembly asm)
+        {
+            try
+            {
+                var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(asm);
+                if (info != null && !string.IsNullOrEmpty(info.version)) return info.version;
+            }
+            catch { }
+
+            try
+            {
+                string pkg = Path.Combine(Path.Combine(Application.dataPath, "PerfAgent"), "package.json");
+                if (File.Exists(pkg))
+                {
+                    var m = Regex.Match(File.ReadAllText(pkg), "\"version\"\\s*:\\s*\"([^\"]+)\"");
+                    if (m.Success) return m.Groups[1].Value;
+                }
+            }
+            catch { }
+            return "";
         }
 
         // =====================================================================
@@ -277,12 +306,26 @@ namespace PerfAgent.Analysis
         static void AppendCodeSection(StringBuilder sb, PerfSnapshot s)
         {
             if (s.codeIssues.Count == 0) return;
+
+            bool anyScoped = false, anyOther = false;
+            for (int i = 0; i < s.codeIssues.Count; i++)
+            {
+                if (s.codeIssues[i].inSceneScope) anyScoped = true; else anyOther = true;
+            }
+
             sb.Append("## 代码反模式（前 40）\n\n");
+            if (anyScoped && anyOther)
+            {
+                sb.Append("> ★ = 属于**本次采集场景**所在目录的脚本 —— 前后对比只看这些行，以及指标表里的"
+                          + "「代码问题数（当前场景目录）」。其余行来自同工程里的其它目录（另一份副本），本次采集用不到。\n\n");
+            }
             sb.Append("| 级别 | 位置 | 模式 | 代码 | 建议 |\n|---|---|---|---|---|\n");
             for (int i = 0; i < s.codeIssues.Count && i < 40; i++)
             {
                 var c = s.codeIssues[i];
-                sb.Append("| ").Append(SeverityLabel(c.severity)).Append(" | `").Append(c.file).Append(':').Append(c.line).Append("` | ")
+                sb.Append("| ").Append(SeverityLabel(c.severity)).Append(" | ")
+                  .Append(c.inSceneScope && anyOther ? "★ " : string.Empty)
+                  .Append('`').Append(c.file).Append(':').Append(c.line).Append("` | ")
                   .Append(c.pattern).Append(" | `").Append(EscapePipe(EscapeTick(c.snippet))).Append("` | ")
                   .Append(EscapePipe(c.suggestion)).Append(" |\n");
             }

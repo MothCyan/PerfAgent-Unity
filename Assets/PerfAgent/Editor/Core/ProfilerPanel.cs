@@ -290,13 +290,34 @@ namespace PerfAgent.Core
             if (median <= 0) return;
 
             int drop = (int)Math.Round(skipSeconds * 1000.0 / median);
-            if (drop > data.frameCount - 10) drop = Math.Max(0, data.frameCount - 10);
+
+            // 暖机不得吃掉大半个窗口。
+            // 实测踩过：面板只保留 300 帧（历史长度没改上去）、帧耗时中位数 ~3.4 ms（≈290 fps），
+            // 1 秒暖机换算出来要丢 290 帧，旧上限「至少留 10 帧」于是把窗口裁到只剩 10 帧 ——
+            // 低于统计门槛，所有动态结论被跳过，两份报告看上去无法对比。
+            // 现在至少留一半（且不少于统计门槛），宁可少丢几帧启动拖动。
+            int keep = Math.Max(PerfSnapshot.MinFramesForStats, data.frameCount / 2);
+            if (keep > data.frameCount) keep = data.frameCount;
+            int maxDrop = data.frameCount - keep;
+            bool capped = false;
+            if (drop > maxDrop)
+            {
+                capped = drop > 0 && maxDrop < drop;
+                drop = maxDrop;
+            }
             if (drop <= 0) return;
 
             data.firstFrame += drop;
             data.frameCount -= drop;
             data.warmupFramesDropped = drop;
             data.warmupSeconds = skipSeconds;
+            if (capped)
+            {
+                data.notes.Add("窗口只有 " + (data.frameCount + drop) + " 帧，暖机只丢了开头的 " + drop
+                               + " 帧（按 " + skipSeconds.ToString("0.#", CultureInfo.InvariantCulture)
+                               + " 秒本应丢更多），否则就没帧可分析了。"
+                               + "想要更长的有效窗口：采集前把 Profiler 的面板历史长度调大，或者少玩几秒。");
+            }
 
             // 序列按新窗口重读（一次原生批量调用，很便宜）
             ReadAllSeries(data);
