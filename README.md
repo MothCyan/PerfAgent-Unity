@@ -66,7 +66,8 @@ Packages/manifest.json            已接入 MCP for Unity v10.2.0 与本地桥�
 ### 怎么跑
 
 1. 打开 `Assets/PerfAgentSample/Before/Scenes/AngryBirdsBefore.unity`，**Play**，拖弹弓发射小鸟、砸砖、砸猪，玩 5～10 秒；
-   同时开 PerfAgent 面板 → **跟随采集**（你操作，工具自己记）；退出 Play 后生成快照。
+   同时开 PerfAgent 面板 → **跟随采集**（你操作，工具自己记；面板会**自动收成一条只显示帧率的细条**，不挡 Game 视图）；
+   退出 Play 后自动展开并生成快照。
 2. 换成 `After/Scenes/AngryBirdsAfter.unity`，重复同样操作，再采一份。
 3. 在面板的**对比**页选这两份快照。
 

@@ -399,7 +399,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 ### 10.9 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 82 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 83 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|
@@ -414,6 +414,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `CodeScanExplanationSelfProvesZero` | 扫描 0 处必须自带覆盖率与作用域；扫描没跑时不能只说「0 处」 |
 | `EventCallbackFindingsAreNotCalledPerFrame` | 碰撞/触发回调里的写法不得说成「每帧方法中出现」，级别封顶到警告，证据里写清执行时机 |
 | `FrameAllocDisplayNeverFakesZero` | 逐帧分配取面板序列（不是恒为 0 的弱口径），拿不到返回 -1/NaN 并由调用方印「—」「不可用」 |
+| `StripGeometryGuardsAgainstTinyRestore` | 细条尺寸不得被当成「收起前的尺寸」（否则采集结束会恢复成一个废窗口）；尺寸串解析拒绝 0x0 / NaN / 字段数不对 |
 
 ---
 
@@ -532,6 +533,15 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 2. **追加内容后立刻设 `scrollOffset` 会被夹到 0**（此刻内容高度还是旧值），
    表现就是「追加了一段长回答，视图却停在开头」。要再用 `schedule.Execute(...)` 在下一个
    panel tick 里滚一次。
+3. **采集时把面板收成细条（`SetStripped`）踩到的三件事** —— 都是「看起来该生效但没生效」那一类：
+   - `minSize` 是**浮动窗口的硬约束**：不临时改小（收到 `(360, 24)`），`position` 写了也会被拉回
+     900x600，细条就变成一张大空白面板；
+   - **停靠的窗口写 `position` 不生效**（尺寸由布局管）。没法预知停靠状态，就在写完 `position` 后
+     **读回来比对**，对不上就当它停靠，并在细条文字里写明「拖成浮动窗口才能真缩小」；
+   - **进 Play 必然触发域重载**，字段会被清空，但窗口尺寸是持久的：重载后再收起时当前尺寸
+     可能**已经是细条**，若直接把它记成「原来的尺寸」，采集结束就会「恢复」成 520x32、面板再也用不了。
+     所以收起前要判断「看起来像不像细条」，并把原尺寸存进 `SessionState`（跨域重载有效）。
+
 ### 11.9 对话历史体检（一次真事故）
 
 现场：用户提问后报 `HTTP 400 Invalid assistant message: content or tool_calls must be set`，

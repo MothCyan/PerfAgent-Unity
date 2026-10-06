@@ -23,6 +23,7 @@
     <Compile Include="../../Editor/Utils/MessageHygiene.cs" Link="Source/MessageHygiene.cs" />
     <Compile Include="../../Editor/Utils/MarkdownLite.cs" Link="Source/MarkdownLite.cs" />
     <Compile Include="../../Editor/Utils/ScriptScope.cs" Link="Source/ScriptScope.cs" />
+    <Compile Include="../../Editor/Utils/StripGeometry.cs" Link="Source/StripGeometry.cs" />
     <Compile Include="../../Editor/Utils/CaptureWindow.cs" Link="Source/CaptureWindow.cs" />
     <Compile Include="../../Editor/Agent/ToolResultFolder.cs" Link="Source/ToolResultFolder.cs" />
     <Compile Include="../../Editor/Core/PerfAgentSettings.cs" Link="Source/PerfAgentSettings.cs" />

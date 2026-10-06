@@ -32,6 +32,7 @@ namespace PerfAgent.RuleRegression
                 CodeFindingsAreSplitBySceneDirectory,
                 EventCallbackFindingsAreNotCalledPerFrame,
                 FrameAllocDisplayNeverFakesZero,
+                StripGeometryGuardsAgainstTinyRestore,
                 AllocGatesAreRecordedForEveryOutcome,
                 CodeScanExplanationSelfProvesZero,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
@@ -338,6 +339,32 @@ namespace PerfAgent.RuleRegression
             Equal(Severity.Error, frameFinding.severity, "每帧方法里的 Error 级反模式保持 Error");
             True(frameFinding.title.IndexOf("每帧方法中出现", StringComparison.Ordinal) >= 0, frameFinding.title);
             EvidenceContains(frameFinding, "执行时机", "每帧");
+        }
+
+        /// <summary>
+        /// 细条模式的窗口几何。
+        ///
+        /// 要挡的事故：进 Play 触发域重载 → 字段清空 → 重载后重新收起时把「当前已经是细条的尺寸」
+        /// 当成了「收起前的尺寸」存下来 → 采集结束「恢复」成一个 520x32 的面板，小得看不见内容、也拖不大。
+        /// </summary>
+        static void StripGeometryGuardsAgainstTinyRestore()
+        {
+            True(StripGeometry.LooksLikeStrip(StripGeometry.Width, StripGeometry.Height),
+                "细条自己的尺寸必须被识别为「像细条」（否则会被当成收起前的尺寸存下来）");
+            True(!StripGeometry.LooksLikeStrip(900f, 600f), "正常面板尺寸不能被误判为细条");
+            True(!StripGeometry.LooksLikeStrip(900f, StripGeometry.Height), "只有高度像细条也不算");
+
+            float x, y, w, h;
+            True(StripGeometry.TryParse(StripGeometry.Format(120f, 40f, 900f, 600f), out x, out y, out w, out h),
+                "自己写出来的串必须能解析回来");
+            Equal(120.0, (double)x, "x");
+            Equal(600.0, (double)h, "h");
+
+            True(!StripGeometry.TryParse("", out x, out y, out w, out h), "空串不能解析");
+            True(!StripGeometry.TryParse("1;2;3", out x, out y, out w, out h), "字段数不对不能解析");
+            True(!StripGeometry.TryParse("0;0;0;0", out x, out y, out w, out h), "0x0 不能当尺寸");
+            True(!StripGeometry.TryParse("0;0;NaN;600", out x, out y, out w, out h), "NaN 不能当尺寸");
+            True(!StripGeometry.TryParse("0;0;900;Infinity", out x, out y, out w, out h), "Infinity 不能当尺寸");
         }
 
         /// <summary>
