@@ -42,12 +42,6 @@ namespace PerfAgent.RuleRegression
             True(rolled.IndexOf("300", StringComparison.Ordinal) >= 0, "必须写出实际分析多少帧：" + rolled);
             True(rolled.IndexOf("分析", StringComparison.Ordinal) >= 0, "得点明分析只用这一段：" + rolled);
 
-            // 细条只有一行：短写法必须比长写法短，且仍然带两个数字
-            string shortForm = CaptureWindow.CountLabelShort(20000, 300);
-            True(shortForm.Length < rolled.Length, "细条用短写法：" + shortForm);
-            True(shortForm.IndexOf("20000", StringComparison.Ordinal) >= 0, shortForm);
-            True(shortForm.IndexOf("300", StringComparison.Ordinal) >= 0, shortForm);
-
             // 拿不到面板保留量时不能编造，退回普通写法
             Same("已记录 500 帧", CaptureWindow.CountLabel(500, 0), "保留量未知时退普通写法");
         }

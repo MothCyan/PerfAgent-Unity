@@ -47,29 +47,15 @@ namespace PerfAgent.UI
         readonly CaptureLiveStats _live = new CaptureLiveStats();
         bool _liveActive;
 
-        // ---- 采集期间的「细条」模式 ----
+        // ---- 采集期间的实时监视 ----
         //
-        // 跟随采集时面板常常就飘在 Game 视图旁边，整块面板会把画面挡掉一半 ——
-        // 实际操作就是「一按采集就把窗口拖到边上、缩到最小」。所以采集一开始就自动收成一条
-        // 只显示帧率/帧耗时的细条（带「展开面板」「停止采集」两个按钮），采集结束再自动展开。
-        //
-        // 两个容易踩的点（都写了注释在方法上）：minSize 没临时改小的话浮动窗口不肯缩；
-        // 停靠的窗口写 position 不生效，这时只能把内容收起来、并在细条上告诉用户怎么才能真缩小。
-        VisualElement _strip;
-        Label _stripLabel;
-        bool _stripped;
-        Rect _preStripRect;
-        Vector2 _preStripMinSize;
-        /// <summary>本次采集已经自动收过一次 —— 用户手动展开后不再自动收起。</summary>
-        bool _stripDoneForThisCapture;
-        /// <summary>停靠的窗口写 position 不生效；探测结果要写在细条上。</summary>
-        bool _positionWritable = true;
+        // 面板里那一条「● 采集监视中 帧率 / 帧耗时 / 已记录 N 帧」就是全部实时反馈（见 RefreshLiveStrip）。
+        // 早期版本在采集时会把整个面板**收成一条细条**（并改窗口尺寸），已按用户要求删除：
+        // 收起/展开本身会动窗口与布局，属于工具擅自控制编辑器外观。
         /// <summary>连续「0 帧」的起点（EditorApplication.timeSinceStartup）；0 = 当前没在数。</summary>
-        double _stripZeroSince;
+        double _zeroFramesSince;
         /// <summary>本次采集是否已经报过「一直没帧」的详细诊断（只报一次，不刷屏）。</summary>
         bool _warnedZeroFramesLive;
-        /// <summary>细条模式下根容器的内边距（展开时要还原）。</summary>
-        Vector4 _preStripPadding;
 
         /// <summary>会话的原始 Markdown；显示时统一转成富文本（否则 `**粗体**` 会原样显示星号）。</summary>
         readonly StringBuilder _transcriptRaw = new StringBuilder();
@@ -104,11 +90,14 @@ namespace PerfAgent.UI
         /// <summary>正在等回答（防止重复发送）。不用按钮的 enabled 状态兼职：见 SetSending。</summary>
         bool _sending;
 
+        /// <summary>面板的最小尺寸（只用于 minSize 约束手动拖拽；不主动改窗口尺寸）。</summary>
+        static readonly Vector2 PanelMinSize = new Vector2(900f, 600f);
+
         [MenuItem(MenuRoot + "打开性能诊断面板 %#p", false, 100)]
         public static void Open()
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
-            window.minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+            window.minSize = PanelMinSize;
             window.Show();
         }
 
@@ -137,29 +126,6 @@ namespace PerfAgent.UI
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
             window.ToggleFollowCapture();
-        }
-
-        /// <summary>
-        /// 把面板收成一条只显示帧率的细条 / 展开。
-        ///
-        /// 采集开始时会自动收起（见 PollFollowCapture），这个菜单是给手动场景用的：
-        /// 比如你想一边看波形一边看 Game 视图，或想把面板收回正常尺寸。
-        /// </summary>
-        [MenuItem(MenuRoot + "面板：收起为细条 / 展开", false, 106)]
-        public static void StripMenu()
-        {
-            var window = GetWindow<PerfAgentWindow>("性能诊断");
-            window.ToggleStrip();
-        }
-
-        public void ToggleStrip()
-        {
-            if (_strip == null)
-            {
-                SetStatus("面板还在初始化，稍后再点一次。");
-                return;
-            }
-            SetStripped(!_stripped, true);
         }
 
         public void ToggleFollowCapture()
@@ -206,7 +172,7 @@ namespace PerfAgent.UI
             // 注意：这里**只设 minSize，不主动改窗口尺寸**。曾经写过「自动撑大」「尺寸不对就换成浮动窗口」这类
             // 自愈逻辑，被用户明确否掉（工具不该擅自改编辑器的窗口与布局）——停靠窗口的尺寸本来就只能由人拖；
             // 已全部移除，窗口尺寸交给 Unity 布局与用户自己。
-            minSize = new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
+            minSize = PanelMinSize;
 
             PerfSession.Changed += OnSessionChanged;
             PerfAgentSettingsWindow.Changed += RefreshLlmStatus;
@@ -362,19 +328,12 @@ namespace PerfAgent.UI
             RefreshDetails();
             RefreshLlmStatus();
             AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**工具会自动量一次基线并替你进入 Play**，"
-                + "你只管操作（战斗、开背包、切界面都算）；面板会**自动收成一条只显示帧率的细条**，不会挡住 Game 视图。\n"
-                + "玩 5~10 秒后**退出 Play**（或点细条上的「停止采集」）即自动结束、面板自动展开。\n"
-                + "想一边看波形一边操作，点细条上的「展开面板」（或菜单 `Tools/PerfAgent/面板：收起为细条 / 展开`）就行；"
+                + "你只管操作（战斗、开背包、切界面都算）；面板里的「● 采集监视中」会实时显示帧率与帧耗时。\n"
+                + "玩 5~10 秒后**退出 Play**（或点工具栏「停止采集」）即自动结束并出结论。\n"
                 + "不想让工具替你按 Play，就在设置里关掉「点采集后自动进入 Play」。\n"
                 + "然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n"
                 + "\n要贴给别人（或丢给外部 AI 继续追问），点工具栏「复制结论」。\n");
             RestoreLatestConversation();
-
-            // 细条：只有它一直待在根上，默认隐藏（见 SetStripped）。
-            // 放在最后是因为 SetStripped 要遍历根节点的子元素，先建完全部布局再建它最直观。
-            _strip = BuildStrip();
-            _strip.style.display = DisplayStyle.None;
-            root.Add(_strip);
         }
 
         /// <summary>刷新 LLM 状态条。读的是真实配置，所以状态不会与实际行为脱节。</summary>
@@ -453,16 +412,6 @@ namespace PerfAgent.UI
         {
             if (FollowCapture.Capturing)
             {
-                // 采集一开始就把面板收成细条：面板常常就飘在 Game 视图旁边，
-                // 整块面板会把画面挡掉一半。只自动收一次 —— 用户手动展开后就不再干涉。
-                if (!_stripDoneForThisCapture)
-                {
-                    _stripDoneForThisCapture = true;
-                    _warnedZeroFramesLive = false;   // 新一轮采集重新允许报一次「没采到帧」
-                    _stripZeroSince = 0;
-                    SetStripped(true, true);
-                }
-
                 double now = EditorApplication.timeSinceStartup;
                 if (now < _nextFollowPoll) return;
 
@@ -474,12 +423,25 @@ namespace PerfAgent.UI
                 {
                     // 采集刚开：把波形起点对齐到这次采集的起点（面板帧号 − 已记录帧数）
                     _liveActive = true;
+                    _warnedZeroFramesLive = false;   // 新一轮采集重新允许报一次「没采到帧」
+                    _zeroFramesSince = 0;
                     _live.Begin(ProfilerApi.LastFrameIndex - frames, now);
                 }
 
                 _live.Sample(ProfilerApi.LastFrameIndex, now);
                 RefreshLiveStrip(true);
-                RefreshStripText();      // 细条上的帧率/帧耗时（同一份样本，口径一致）
+
+                // 「持续 0 帧」是最难自查的一种状态：采集在跑、数字不动，用户分不清是工具坏了还是 Profiler 没录。
+                // 采集层也会报（带记录目标阶梯的结论），这里补一条窗口侧诊断。
+                if (frames == 0)
+                {
+                    if (_zeroFramesSince <= 0) _zeroFramesSince = now;
+                    if (now - _zeroFramesSince > 2.0) WarnNoFramesOnce(now - _zeroFramesSince);
+                }
+                else
+                {
+                    _zeroFramesSince = 0;
+                }
 
                 if (frames != _lastFollowFrames)
                 {
@@ -498,9 +460,6 @@ namespace PerfAgent.UI
                 // 从「采集中」变为「已结束」：冻结波形（保留最后一段曲线），并补一次终态提示
                 _liveActive = false;
                 _lastFollowFrames = -1;
-                _stripDoneForThisCapture = false;
-                // 结束了就自动展开 —— 收起期间屏幕上只有一条帧率，结论得让用户看得见。
-                if (_stripped) SetStripped(false, true);
                 RefreshLiveStrip(false);
 
                 SetStatus(string.IsNullOrEmpty(FollowCapture.LastSnapshotId)
@@ -620,230 +579,13 @@ namespace PerfAgent.UI
         }
 
         // =====================================================================
-        // 细条模式（采集时别遮挡视线）
+        // （原「细条模式」已删除）
+        //
+        // 2026-10-07：用户明确要求删掉「采集时把面板收成细条」这件事 ——
+        // 收起/展开本身要改窗口尺寸与布局，属于工具擅自控制编辑器外观。
+        // 现在采集期间的全部实时反馈就是面板里那一条「● 采集监视中 …」（RefreshLiveStrip），
+        // 不自动收起也不自动展开，面板尺寸完全交给用户。
         // =====================================================================
-
-        /// <summary>
-        /// 采集期间的细条：只显示帧率/帧耗时/已记录帧数，加两个按钮。
-        ///
-        /// 不显示整个波形也不显示结论 —— 这个条的存在意义就是「不挡画面但知道在录」。
-        /// 数字口径与面板上的实时波形完全一致（同一个 CaptureLiveStats）。
-        /// </summary>
-        VisualElement BuildStrip()
-        {
-            var bar = new VisualElement();
-            bar.style.flexDirection = FlexDirection.Row;
-            bar.style.alignItems = Align.Center;
-            bar.style.backgroundColor = Theme.CardBg;
-            Theme.Rounded(bar, Theme.Radius);
-            Theme.Border1(bar, Theme.Border);
-            Theme.Pad(bar, 8, 8, 2, 2);
-            // 细条只有一行高：禁掉换行 + 裁掉溢出。
-            // 实测踩过：文字换行后超出窗口高度，而 UI Toolkit 父元素默认不裁剪 ——
-            // 多出来的那几行直接画在窗口外/上面，看起来就是「字叠在一起」。
-            bar.style.overflow = Overflow.Hidden;
-
-            // 胶囊也不参与压缩：窄的时候该省略的是文字。
-            var pill = Theme.Pill("● 跟随采集中", Theme.Accent);
-            pill.style.flexShrink = 0f;
-            bar.Add(pill);
-
-            _stripLabel = new Label("等 Profiler 出数…");
-            _stripLabel.style.fontSize = Theme.SizeSmall;
-            _stripLabel.style.color = Theme.Text;
-            _stripLabel.style.marginLeft = 10;
-            _stripLabel.style.marginRight = 10;
-            _stripLabel.style.flexGrow = 1;
-            _stripLabel.style.flexShrink = 1;
-            _stripLabel.style.minWidth = 0;                     // 允许被压到比内容更窄（否则它撑开整行）
-            _stripLabel.style.whiteSpace = WhiteSpace.NoWrap;   // 只允许一行（诊断详情走 tooltip / Console）
-            // **标签自己也要 overflow: Hidden**：实测踩过 —— 只给外层条设 overflow 不够，
-            // 文字会画出标签的矩形、直接叠在右边的按钮上（截图里就是「字叠在一起」）。
-            // NoWrap + Hidden + Ellipsis 三件套才能把长文案改成末尾省略号。
-            _stripLabel.style.overflow = Overflow.Hidden;
-            _stripLabel.style.textOverflow = TextOverflow.Ellipsis;
-            bar.Add(_stripLabel);
-
-            // 展开/收起对用户是手动挡；自动收起只在采集开始时做一次。
-            // 按钮不参与压缩（flexShrink=0）：窄的时候该省略的是文字，不是把按钮压没了。
-            var expandBtn = Theme.Ghost("展开面板", delegate { SetStripped(false, true); });
-            expandBtn.style.flexShrink = 0f;
-            bar.Add(expandBtn);
-            var stopBtn = Theme.Ghost("停止采集", ToggleFollowCapture);
-            stopBtn.style.flexShrink = 0f;
-            bar.Add(stopBtn);
-            return bar;
-        }
-
-        /// <summary>明细区/对话区等全部子元素与细条二选一显示；顺便把窗口尺寸也收/放。</summary>
-        void SetStripped(bool on, bool moveWindow)
-        {
-            if (_strip == null || _stripped == on) return;
-            _stripped = on;
-
-            var host = rootVisualElement;
-            for (int i = 0; i < host.childCount; i++)
-            {
-                var child = host[i];
-                if (child == _strip) continue;
-                child.style.display = on ? DisplayStyle.None : DisplayStyle.Flex;
-            }
-            _strip.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
-
-            if (on)
-            {
-                // 进 Play 会触发域重载，字段会被清空，但**窗口尺寸是持久的** ——
-                // 重载后重新收起时，当前尺寸可能已经是细条了，绝不能把它当成「原来的尺寸」存下来，
-                // 否则采集结束后会「恢复」成一条细条、面板再也用不了。
-                //
-                // 判定必须用 NeedsGrow（要求**宽高都**达到面板下限），不能用「宽度够大就算面板」：
-                // 「宽而扁」（实测 1460x85）会通过只看宽度的旧判定被存成「面板尺寸」，
-                // 展开后就把面板恢复成一条扁窗口。
-                if (!StripGeometry.NeedsGrow(position.width, position.height))
-                {
-                    _preStripRect = position;
-                    SavePreStripRect(_preStripRect);
-                }
-                else if (!TryLoadPreStripRect(out _preStripRect))
-                {
-                    _preStripRect = new Rect(position.x, position.y,
-                        StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-                }
-
-                _preStripMinSize = minSize;
-                // 根容器原本有 10/10/8/8 的内边距，在 40 多像素高的窗口里会直接把内容挤到换行溢出 ——
-                // 细条期间把它压到 4，展开时再还原。
-                _preStripPadding = new Vector4(rootVisualElement.style.paddingLeft.value.value,
-                    rootVisualElement.style.paddingRight.value.value,
-                    rootVisualElement.style.paddingTop.value.value,
-                    rootVisualElement.style.paddingBottom.value.value);
-                Theme.Pad(rootVisualElement, 4, 4, 4, 4);
-                // minSize 是浮动窗口的硬约束：不改小的话窗口会被拉回 900x600，细条变成一张大空白面板。
-                minSize = new Vector2(360, 24);
-                if (moveWindow) ApplyStripRect();
-            }
-            else
-            {
-                // 展开：minSize 先恢复成面板下限。
-                // 不能只信 _preStripMinSize —— 进 Play 会域重载，它早就被清掉了（实测就是这个原因
-                // 让面板带着细条的 minSize 回来，于是能一直小下去）。
-                minSize = _preStripMinSize.x > 1f
-                    ? _preStripMinSize
-                    : new Vector2(StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-                Theme.Pad(rootVisualElement, _preStripPadding.x, _preStripPadding.y, _preStripPadding.z, _preStripPadding.w);
-                if (_preStripRect.width <= 1f && !TryLoadPreStripRect(out _preStripRect))
-                    _preStripRect = new Rect(position.x, position.y,
-                        StripGeometry.PanelWidth, StripGeometry.PanelHeight);
-                if (moveWindow) RestoreStripRect();
-                try { SessionState.EraseString(StripPrevRectKey); } catch { }
-            }
-
-            RefreshStripText();
-        }
-
-        void ApplyStripRect()
-        {
-            try
-            {
-                float x = _preStripRect.x + Mathf.Max(0f, (_preStripRect.width - StripGeometry.Width) * 0.5f);
-                position = new Rect(x, _preStripRect.y, StripGeometry.Width, StripGeometry.Height);
-
-                // 停靠中的窗口写 position 不生效（Unity 用布局管尺寸）—— 读回来对不上就当它停靠着，
-                // 细条上写明「拖成浮动窗口才能真缩小」，而不是默默什么都不发生。
-                _positionWritable = Mathf.Abs(position.width - StripGeometry.Width) < 1f
-                                    && Mathf.Abs(position.height - StripGeometry.Height) < 1f;
-            }
-            catch { _positionWritable = false; }
-        }
-
-        void RestoreStripRect()
-        {
-            try
-            {
-                if (_preStripRect.width > 1f && _preStripRect.height > 1f) position = _preStripRect;
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// 收起前的窗口尺寸存进 SessionState：进 Play 一定会触发域重载，
-        /// 光靠字段的话「恢复原来的尺寸」会退化成恢复成一个 0x0。
-        /// </summary>
-        const string StripPrevRectKey = "PerfAgent.UI.PreStripRect";
-
-        static void SavePreStripRect(Rect r)
-        {
-            try
-            {
-                SessionState.SetString(StripPrevRectKey, StripGeometry.Format(r.x, r.y, r.width, r.height));
-            }
-            catch { }
-        }
-
-        static bool TryLoadPreStripRect(out Rect r)
-        {
-            r = new Rect();
-            try
-            {
-                float x, y, w, h;
-                if (!StripGeometry.TryParse(SessionState.GetString(StripPrevRectKey, ""), out x, out y, out w, out h))
-                    return false;
-                r = new Rect(x, y, w, h);
-                return true;
-            }
-            catch { return false; }
-        }
-
-        /// <summary>刷新细条上的数字（跟面板上的实时波形同一个口径）。</summary>
-        void RefreshStripText()
-        {
-            if (_stripLabel == null) return;
-
-            var culture = System.Globalization.CultureInfo.InvariantCulture;
-            var w = _live.waveform;
-            string text;
-            if (w.Count == 0)
-            {
-                text = "等 Profiler 出数…（" + CaptureWindow.CountLabelShort(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames) + "）";
-            }
-            else
-            {
-                text = w.Fps().ToString("0.#", culture) + " FPS"
-                     + "　帧耗时 P50 " + w.P50Ms().ToString("0.##", culture)
-                     + " / P95 " + w.P95Ms().ToString("0.##", culture)
-                     + " / 峰值 " + w.MaxMs().ToString("0.##", culture) + " ms"
-                     + "　" + CaptureWindow.CountLabelShort(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames);
-            }
-            if (!_positionWritable)
-                text += "　·　停靠中：拖成浮动窗口才能缩小";
-
-            // 「持续 0 帧」是最难自查的一种状态：采集在跑、数字不动，用户分不清是工具坏了还是 Profiler 没录。
-            // 细条只有一行，所以这里只放一个短标记 —— 详细原因 + 自愈动作走 Console（见 WarnNoFramesOnce）。
-            if (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0)
-            {
-                double now = EditorApplication.timeSinceStartup;
-                if (_stripZeroSince <= 0) _stripZeroSince = now;
-                if (now - _stripZeroSince > 2.0)
-                {
-                    text += "　·　长时间 0 帧";   // 详情在 tooltip / Console：细条只有一行，长句会被裁成省略号
-                    WarnNoFramesOnce(now - _stripZeroSince);
-                }
-            }
-            else
-            {
-                _stripZeroSince = 0;
-            }
-
-            if (!string.Equals(_stripLabel.text, text, StringComparison.Ordinal))
-            {
-                _stripLabel.text = text;
-                // 口径与 Profiler 完整状态都放 tooltip：细条上只放数字与一句原因。
-                _stripLabel.tooltip = "口径：" + _live.Source
-                    + "\n采集期间只留这一条，结束后面板会自动展开。"
-                    + (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0
-                        ? "\n" + PanelCapture.DescribeProfilerState() : "");
-            }
-        }
 
         /// <summary>「采集中但一帧都没录到」的一句话原因（也进 Console）。</summary>
         static string NoFrameReason()
@@ -866,7 +608,7 @@ namespace PerfAgent.UI
         /// 采集期间长时间 0 帧：报一次详细诊断（**不再自己动手救** —— 自救是采集层的
         /// 记录目标阶梯干的，见 <c>PanelCapture.RunTargetLadder</c>，它会按顺序实测并写出结论）。
         ///
-        /// 这里只做窗口这一侧该做的事：把用户看得见的细条状态与 Profiler 真值对上号，
+        /// 这里只做窗口这一侧该做的事：把用户看得见的状态栏与 Profiler 真值对上号，
         /// 并且**只报一次** —— 采集期间刷日志本身会产生分配，会污染测量。
         /// </summary>
         void WarnNoFramesOnce(double zeroSeconds)
@@ -911,7 +653,6 @@ namespace PerfAgent.UI
             bar.Add(Theme.Secondary("导出 HTML", delegate { Export(true); }));
             bar.Add(Theme.Divider(true));
             bar.Add(Theme.Ghost("新会话", NewConversation));
-            bar.Add(Theme.Ghost("收起为细条", delegate { SetStripped(true, true); }));
             return bar;
         }
 
