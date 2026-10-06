@@ -108,12 +108,14 @@ namespace PerfAgent.UI
             sb.Append("Profiler 记录总开关 enabled = ").Append(ProfilerApi.EnabledRaw).Append('\n');
             sb.Append("Profiler profileEditor = ").Append(ProfilerApi.ProfileEditor)
               .Append("（true 时 Profiler 窗口会主动驱动帧写入）\n");
-            // 「记录目标」就是「会不会写帧」的总闸：目标不是编辑器时 enabled 开着也一帧不写（实测 2026-10-07）。
-            sb.Append("记录目标 = ").Append(ProfilerApi.ProfileEditor
-                ? "编辑器自身（会写帧）" : "不是编辑器 —— enabled 开着也不会写帧，采集必然 0 帧")
-              .Append('\n');
+            // 「记录目标」这件事在 ProfilerDriver 里到底由哪个字段表示、Play 下该取什么值，
+            // 官方文档查不到（猜错过一次）—— 所以不写结论，只把全部字段的真值列在旁边让人自己看。
+            sb.Append("记录目标相关：profileEditor，以及下面【1b】里 ProfilerDriver 的全部静态成员\n");
             sb.Append("合并读法 ProfilerApi.Enabled = ").Append(ProfilerApi.Enabled)
               .Append("（= enabled || profileEditor，仅供人看）\n");
+            sb.Append("编辑器状态: isPlaying=").Append(EditorApplication.isPlaying)
+              .Append("，isPaused=").Append(EditorApplication.isPaused)
+              .Append("，isCompiling=").Append(EditorApplication.isCompiling).Append('\n');
             sb.Append("帧索引范围: ").Append(ProfilerApi.FirstFrameIndex).Append(" ~ ").Append(ProfilerApi.LastFrameIndex)
               .Append("（共 ").Append(ProfilerApi.FrameCount).Append(" 帧）\n");
 
@@ -170,6 +172,12 @@ namespace PerfAgent.UI
             {
                 sb.Append("（无可用帧：请先打开 Profiler 窗口并让编辑器运行几帧，或直接点采集）\n");
             }
+            sb.Append('\n');
+
+            // ---- 1b. ProfilerDriver 全部静态成员 ----
+            // 0 帧排查的「最后一张底牌」：不猜哪个字段管记录目标，直接把真值全列出来。
+            sb.Append("【1b】ProfilerDriver 静态成员真值（0 帧时把这整段发出来）\n");
+            sb.Append(ProfilerApi.DumpDriverStatics());
             sb.Append('\n');
 
             // ---- 2. 内存 API ----

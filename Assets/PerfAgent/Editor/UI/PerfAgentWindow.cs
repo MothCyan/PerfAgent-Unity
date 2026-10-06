@@ -839,45 +839,37 @@ namespace PerfAgent.UI
             // 会把「profileEditor 开着、enabled 关着」误报成「在记录」（实测把排查带偏过）。
             if (!ProfilerApi.EnabledRaw)
                 return "Profiler 没在记录（ProfilerDriver.enabled=false）：到 Profiler 窗口点一下 Record";
-            // 2026-10-07 实测：这一支就是一帧不写的真正原因 —— enabled 开着也没用。
+            // 2026-10-07 现场就是这一支（enabled=true、profileEditor=false、first/last 均 -1）。
+            // 它**不等于**已证实的原因（采集层会用记录目标阶梯实测三种组合），但先说清「目标看着不对」
+            // 比笼统说一句「在记录却没写出帧」有用。
             if (!ProfilerApi.ProfileEditor)
-                return "Profiler 的记录目标不是编辑器（profileEditor=false）：这个状态下无论是不是 Play 都不会写帧";
+                return "Profiler 的记录目标不是编辑器（profileEditor=false）：enabled 开着也可能一帧都不写，正在实测三种组合";
             if (ProfilerApi.LastFrameIndex < 0)
                 return "两个开关都是开的，但一帧都没写出来（lastFrameIndex=-1）：看是不是 Profiler 窗口在暂停，或系统内存告警导致 Unity 自己丢帧";
             return "Profiler 有帧（last=" + ProfilerApi.LastFrameIndex + "）但本次起点对不上，已自动重定 —— 再等一帧";
         }
 
         /// <summary>
-        /// 采集期间长时间 0 帧：报一次详细诊断，并**强制重开一次记录会话**（清历史 + 关一次再开 + 强制切回编辑器目标）。
+        /// 采集期间长时间 0 帧：报一次详细诊断（**不再自己动手救** —— 自救是采集层的
+        /// 记录目标阶梯干的，见 <c>PanelCapture.RunTargetLadder</c>，它会按顺序实测并写出结论）。
         ///
-        /// 为什么要自愈：进/退 Play 的会话切换后偶发「两个开关看着都对、就是什么都不写」的僵死态；
-        /// 重开一次能救回来，而此刻帧数是 0，清历史不会丢任何东西。
-        /// 注意必须**强制**把记录目标置 true（<c>RestartRecording(true)</c>）——
-        /// 沿用出错前的值会把「目标不对」这个真凶原封不动地留下来（上一版就是这么白救了一次）。
-        /// 只报一次、只自愈一次 —— 采集期间刷日志本身会产生分配，会污染测量。
+        /// 这里只做窗口这一侧该做的事：把用户看得见的细条状态与 Profiler 真值对上号，
+        /// 并且**只报一次** —— 采集期间刷日志本身会产生分配，会污染测量。
         /// </summary>
         void WarnNoFramesOnce(double zeroSeconds)
         {
             if (_warnedZeroFramesLive) return;
             _warnedZeroFramesLive = true;
 
-            bool enabledBefore = ProfilerApi.EnabledRaw;
-            bool editorBefore = ProfilerApi.ProfileEditor;
-            bool restarted = false;
-            try { restarted = ProfilerApi.RestartRecording(true); }
-            catch { }
-
             Debug.LogWarning("[PerfAgent] 采集已开始 " + zeroSeconds.ToString("0.#", CultureInfo.InvariantCulture)
                 + " 秒，但一帧都没采到：" + NoFrameReason()
                 + "\n" + PanelCapture.DescribeProfilerState()
-                + "\n已强制重开一次 Profiler 记录会话（enabled: " + enabledBefore + " → " + ProfilerApi.EnabledRaw
-                + "，记录目标=编辑器 profileEditor: " + editorBefore + " → " + ProfilerApi.ProfileEditor
-                + "，成功=" + restarted + "）。"
-                + (editorBefore ? "" : "目标已被工具拨回编辑器，正常应该马上开始跳帧。")
-                + "\n若仍为 0 帧，请依次："
-                + "\n  1) 手动打开一次 Profiler 窗口，确认左上角的 Record（红点）是亮着的、且窗口没在暂停状态；"
-                + "\n  2) 菜单 Tools/PerfAgent/API 探针 → 把 Profiler 小节截图（那里列出 enabled / profileEditor 的实际值）；"
-                + "\n  3) 若探针里 lastFrameIndex 也一直为 -1，把这条日志发给开发者。");
+                + "\n自救：采集层会在面板一帧不写时按顺序实测三种记录目标组合，"
+                + "并把「哪一步开始出帧 / 全都无效」写进日志与快照备注 —— 请往下翻看 "
+                + "[PerfAgent] 开头的那几条日志。"
+                + "\n若已经报「三种组合都无效」：① 看系统内存是否告急（Unity 会报 running out of memory，此时它自己丢帧）；"
+                + "② 打开 Profiler 窗口确认 Record（红点）亮着、窗口没被暂停；"
+                + "③ 菜单 Tools/PerfAgent/API 探针 → 把【1】与【1b】两段发出来。");
         }
 
 

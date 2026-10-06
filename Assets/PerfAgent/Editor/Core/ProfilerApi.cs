@@ -164,14 +164,15 @@ namespace PerfAgent.Core
         /// <summary>
         /// 编辑器自身是否在被分析（<c>ProfilerDriver.profileEditor</c>）。
         ///
-        /// **它就是「Profiler 的记录目标是不是编辑器」这个开关**，跟是不是 Play 模式无关：
-        /// 只把 <see cref="Enabled"/> 打开而目标是设备/空的时候，一帧都不会写 ——
-        /// 实测（2026-10-07）：重启编辑器后没开过 Profiler 窗口 → <c>profileEditor=false</c>，
-        /// 此时 <c>enabled=true</c> 但 <c>firstFrameIndex / lastFrameIndex</c> 恒为 -1，
-        /// 采多久都是 0 帧；日志里只能看到「在记录却没写出帧」，把排查完全带偏。
-        /// 以前之所以没暴露，是因为用户自己开着 Profiler 窗口 —— 窗口会把
-        /// <c>profileEditor</c> 置为 true，等于顺手帮我们开了这个开关。
-        /// 所以：**采集期间必须把它置 true**，用完由 <see cref="ProfilerOwnership"/> 还原用户原值。
+        /// **它是「记录目标」相关的开关之一，但它在 Play 模式下到底该取什么值，没有可靠依据。**
+        /// 2026-10-07 现场：<c>enabled=True，profileEditor=False，firstFrameIndex=-1，lastFrameIndex=-1</c>
+        /// （一帧都不写），于是曾据此断定「Play 下也必须 profileEditor=true」—— 这是**没有证据的**：
+        /// 同一天用户手动开 Play 能采到帧（当时也是这条路径），而且 Profiler 窗口的目标下拉当时是
+        /// 「Play Mode」而不是「Editor」，两者在 <c>ProfilerDriver</c> 里怎么映射官方文档没写。
+        /// 现在：不在采集一开始就强行改它，而是在面板一帧不写时用
+        /// <see cref="PerfAgent.Utils.RecordingTargetLadder"/> 按顺序实测三种组合，用「哪一步开始出帧」说话。
+        /// 探针里的 <see cref="DumpDriverStatics"/> 会把全部静态成员的真值列出来。
+        /// 用完由 <see cref="ProfilerOwnership"/> 还原用户原值。
         /// </summary>
         public static bool ProfileEditor
         {
@@ -184,6 +185,61 @@ namespace PerfAgent.Core
         {
             if (!ProfileEditor) ProfileEditor = true;
             return ProfileEditor;
+        }
+
+        /// <summary>
+        /// 把 <c>ProfilerDriver</c> 的**全部静态成员与当前真值**打印出来（API 探针用）。
+        ///
+        /// 为什么需要它：Profiler 窗口左上角那个目标下拉（Editor / Play Mode / 设备）在
+        /// <c>ProfilerDriver</c> 里到底由哪个字段表示、Play 模式下该取什么值，官方文档里查不到 ——
+        /// 2026-10-07 就是靠猜写了个「Play 下也必须 profileEditor=true」，结果是错的。
+        /// 把全部字段的真值打到探针里，比继续猜便宜得多。
+        /// </summary>
+        public static string DumpDriverStatics()
+        {
+            var t = Driver;
+            if (t == null) return "  （找不到 ProfilerDriver 类型）\n";
+
+            var sb = new StringBuilder();
+            try
+            {
+                var props = t.GetProperties(Reflect.StaticAll);
+                Array.Sort(props, (a, b) => string.CompareOrdinal(a.Name, b.Name));
+                foreach (var p in props)
+                {
+                    if (p.GetIndexParameters().Length > 0) continue;
+                    object v;
+                    try { v = p.GetValue(null, null); }
+                    catch (Exception e) { v = "<" + e.GetType().Name + ">"; }
+                    sb.Append("  ").Append(p.Name).Append(" = ").Append(Fmt(v)).Append('\n');
+                }
+
+                var fields = t.GetFields(Reflect.StaticAll);
+                Array.Sort(fields, (a, b) => string.CompareOrdinal(a.Name, b.Name));
+                foreach (var f in fields)
+                {
+                    object v;
+                    try { v = f.GetValue(null); }
+                    catch (Exception e) { v = "<" + e.GetType().Name + ">"; }
+                    sb.Append("  ").Append(f.Name).Append(" = ").Append(Fmt(v)).Append('\n');
+                }
+            }
+            catch (Exception e)
+            {
+                sb.Append("  （枚举失败：").Append(e.GetType().Name).Append("）\n");
+            }
+            return sb.ToString();
+        }
+
+        static string Fmt(object v)
+        {
+            if (v == null) return "null";
+            var arr = v as Array;
+            if (arr != null) return "[" + arr.Length + " 项]";
+            if (v is bool) return (bool)v ? "true" : "false";
+            var s = v as string;
+            if (s != null) return "\"" + s + "\"";
+            return v.ToString();
         }
 
         public static int FirstFrameIndex

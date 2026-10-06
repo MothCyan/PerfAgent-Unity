@@ -378,31 +378,40 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 - 新增 **`ProfilerApi.EnabledRaw`**（只读 `enabled`，不做任何兜底）与 `EnsureEnabled()`（写后读回校验），
   诊断 / 报错 / 自愈一律用 `EnabledRaw`；合并读法只留给「人看的探针输出」；
-- `ProfilerApi.RestartRecording(ensureEditorTarget)`：清帧 → `enabled=false` → 重新开启 → **强制**切记录目标，
-  用于把偶发的「开着但什么都不写」的僵死记录会话换掉；
-- 采集期间持续 10 秒 0 帧：Console 打一条**含前后两个开关真值**的警告，并**强制重开一次记录会话**
-  （此刻帧数是 0，清历史不丢东西；只自愈一次，免得采集期间刷日志产生分配）；
+- `ProfilerApi.RestartRecording(ensureEditorTarget)`：清帧 → `enabled=false` → 重新开启 → 按需切记录目标，
+  用于把偶发的「开着但什么都不写」的僵死记录会话换掉（现在只有记录目标阶梯会调它）；
+- 采集期间 0 帧：2 秒时先打一条提示（说明正在实测），4.5 秒左右由阶梯给出结论
+  （「第 N 种目标开始出帧」或「三种都无效，不是目标的问题」）；只报一次，
+  免得采集期间刷日志产生分配、污染测量；
 - API 探针里 `enabled` / `profileEditor` / 合并读法**分开列**，避免再次误判。
 
-**第三个坑（真正的元凶）：`profileEditor` 才是「到底会不会写帧」的总闸，跟 Play 无关。**
-现场日志：`enabled=True，profileEditor=False，historyLength=300，firstFrameIndex=-1，lastFrameIndex=-1` ——
-`enabled` 开着，面板一帧都没写出来。原因：`profileEditor` 表示「Profiler 的记录目标是不是编辑器自身」，
-目标不是编辑器（停在上一个连过的设备 / 没选目标）时，`enabled=true` 也**一帧都不写**。
+**第三个坑（未完全定性）：`profileEditor` / 记录目标到底该取什么值，文档没写 —— 所以不猜，按顺序实测。**
 
-为什么以前看起来「只要 enabled」：用户自己开着 Profiler 窗口，**窗口会把 `profileEditor` 置 true**，
-等于顺手替我们开了这个开关。重启编辑器后没开过 Profiler 窗口 → 目标为假 → 采多久都是 0 帧。
-所以：
+现场日志（2026-10-07）：`enabled=True，profileEditor=False，historyLength=300，firstFrameIndex=-1，lastFrameIndex=-1` ——
+`enabled` 开着，面板一帧都没写；而且用户手动打开 Profiler 窗口后，窗口里也是空图、`Frame: 0 / 0`。
 
-- `PanelCapture.Start()` 改为 `ProfilerOwnership.Acquire(true)` —— 采集期间**必须**把记录目标切到编辑器；
-  归还时按借出前记录的 `profileEditor` 原值还原（用户原来在看设备就还原成设备）；
-- 借出时**回读校验**：目标切不过去（写失败）会报一条一次性的警告，
-  否则用户只会拿到一份「只剩工程级审计」的报告，完全猜不到原因；
-- 自愈必须是 `RestartRecording(true)` —— **不能沿用出错前的值**，否则真凶原封不动留在原地（上一版就这么白救了一次）；
-- `NoFrameReason()` / `DescribeProfilerState()` / API 探针都单独列出「记录目标」这一项，
-  让「enabled=false」「目标不对」「两个都对却不写帧」三种 0 帧原因在日志里当场可分。
+第一版处理是**猜的**（断定「Play 下也必须 `profileEditor=true`，所以采集一开始就强行切目标」），
+依据只是「`enabled` 与目标两个开关里，后者看起来不对」。这个断证站不住：
+同一天用户手动开 Play 能采到帧（同一个代码路径），而且他 Profiler 窗口左上角的目标下拉是
+**`Play Mode`** 而不是 `Editor` —— 这两个目标在 `ProfilerDriver` 里怎么映射，官方文档里查不到。
+强行切目标的风险很具体：**可能把本来能用的路径反而弄坏**。
 
-> 这一条也解释了「为什么昨天能采到今天不能」：昨天是手动开 Play、Profiler 窗口开着；
-> 今天自动进 Play、窗口是关的。**同一个代码路径，环境不同，结论完全相反。**
+现在的口径（`Utils/RecordingTargetLadder.cs`，纯逻辑 + 离线回归）：
+
+- 采集开始**不动用户的目标**（`Acquire(false)`）；
+- 面板一帧都不写时（此时清帧历史是零代价）按顺序实测三种组合，每种观察 1.5 秒：
+  ① 不动、② 切 `profileEditor=true`、③ 切回 `profileEditor=false`；
+- 哪一步开始出帧就停在那里，并把「**这份数据是在哪种目标下录的**」写进日志与快照备注；
+- 三种都无效 → 明确写「**不是目标的问题**」，把注意力引向环境（内存告急 / Profiler 被暂停 / 刚编译完），
+  而不是让用户继续折腾目标开关。
+
+> 教训（比结论重要）：**没有可靠依据时不要做「强行修正」，要做「有记录的实测」。**
+> 强行修正如果猜错了，会把用户本来能用的路径一起弄坏，而且日志里看不出哪一步是猜的；
+> 阶梯式实测即使结论是「都不是」，也把搜索空间真实地缩小了一圈。
+
+配套：API 探针里的 **【1b】ProfilerDriver 静态成员真值**（`ProfilerApi.DumpDriverStatics`）
+把该类的全部静态属性/字段的真实值列出来 —— 下次再遇到「目标该取什么值」的问题，
+不再靠记忆与推理，直接看真值。
 
 
 ### 10.8 工程级扫描必须按「当前场景目录」分组
@@ -454,7 +463,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 ### 10.10 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 86 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 90 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|

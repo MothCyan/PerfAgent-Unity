@@ -44,12 +44,12 @@ namespace PerfAgent.Core
         }
 
         /// <summary>
-        /// 借出：确保 Profiler 在记录、**且记录目标就是编辑器自身**。<paramref name="needProfileEditor"/> 为 true 时
-        /// 额外打开「分析编辑器自身」—— 它不是「非 Play 才需要」的候选开关，而是「到底会不会写帧」的开关：
-        /// 实测（2026-10-07）重启编辑器后没开过 Profiler 窗口，<c>profileEditor=false</c>，
-        /// 此时 <c>enabled=true</c> 也会一帧不写（first/last 恒为 -1），日志里却只看到「在记录」。
-        /// 以前没暴露只是因为用户自己开着 Profiler 窗口（窗口会把该开关置 true）。
-        /// 采集期间置 true，归还时还原用户原值。
+        /// 借出：确保 Profiler 在记录。<paramref name="needProfileEditor"/> 为 true 时额外打开
+        /// 「分析编辑器自身」—— 基线测量（编辑模式下空转）需要它，否则面板不记录编辑器帧。
+        ///
+        /// 注意：**Play 模式下这个开关该取什么值没有可靠依据**（见 <see cref="ProfilerApi.ProfileEditor"/> 的注解）。
+        /// 所以跟随采集不在这里强行改它（传 false），而是在面板一帧不写时用
+        /// <see cref="PerfAgent.Utils.RecordingTargetLadder"/> 按顺序实测三种组合。
         /// </summary>
         public static void Acquire(bool needProfileEditor)
         {
@@ -87,15 +87,14 @@ namespace PerfAgent.Core
                 // 切记录目标有可能把 enabled 带回去，回读一遍再补齐（两个开关都必须是真值）
                 if (!ProfilerApi.EnabledRaw) ProfilerApi.EnsureEnabled();
 
-                // 目标切不过去就等于「采多久都是 0 帧」，必须当成错误报出来，
+                // 目标切不过去就等于「可能采多久都是 0 帧」，当成错误报出来，
                 // 否则用户只会看到一份只剩工程级审计的报告。
                 if (needProfileEditor && !ProfilerApi.ProfileEditor
                     && !SessionState.GetBool(WarnedEditorKey, false))
                 {
                     SessionState.SetBool(WarnedEditorKey, true);
                     Debug.LogWarning("[PerfAgent] 无法把 Profiler 的记录目标切到编辑器自身（profileEditor 回读仍是 false）："
-                        + "这种状态下即使 enabled=true 也不会写出任何帧（表现就是一直 0 帧）。"
-                        + "请手动打开一次 Profiler 窗口（窗口自己会把目标切回编辑器）后再开始采集。");
+                        + "基线测量需要它才会记录编辑器帧。请手动打开一次 Profiler 窗口（窗口自己会把目标切回编辑器）后再测。");
                 }
 
                 // 面板历史必须是「我们想要的那个值」，不能只在它更大时才压小。

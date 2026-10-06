@@ -58,6 +58,13 @@ namespace PerfAgent.Core
         int _pollIntervalMs = 250;
         bool _warnedNoFrames;
 
+        /// <summary>记录目标试探阶梯的步号；-1 = 还没启动（有帧就不需要启动）。</summary>
+        int _ladderStep = -1;
+        double _ladderStepStart;
+        int _ladderBaseline;
+        bool _ladderDone;
+        string _ladderNote;
+
         /// <summary>
         /// 本次采集重定过起点：开始那一刻读到的面板帧号来自上一个 Profiling 会话（帧号往回跳）。
         /// 收尾时写进快照备注 —— 这种情况的窗口可能含采集开始前后的少量帧。
@@ -96,14 +103,14 @@ namespace PerfAgent.Core
             _rebasedToRestart = false;
             CapturedCount = 0;
 
-            // 面板在记录、且记录目标就是编辑器，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
+            // 面板在记录，才有帧可读。借还逻辑（历史上限、域重载兜底归还）见 ProfilerOwnership ——
             // 以前在这里手写「开 / 关」，进 Play 时的域重载会把关掉那一步吃掉，
             // 结果编辑器一直逐帧记录，Profiler 帧数据把系统内存吃光。
             //
-            // 这里传 true（切记录目标）是 2026-10-07 的实测结论：目标不是编辑器时
-            // enabled 开着也一帧不写（first/last 恒为 -1）—— 以前用户自己开着 Profiler 窗口，
-            // 窗口顺手把目标切好了，所以「不开目标」看起来能用；窗口一关就不行了。
-            ProfilerOwnership.Acquire(true);
+            // 这里**不动用户的记录目标**：这个开关（profileEditor）到底该在 Play 下取什么值，
+            // 没有可靠文档，猜错过一次。面板一帧不写时由 RecordingTargetLadder 按顺序实测三种组合，
+            // 并把「哪一步有效」写进日志与快照 —— 实测比猜可信。
+            ProfilerOwnership.Acquire(false);
 
             // 窗口从「现在之后的第一帧」开始（这里之后录进来的都是被测期间）
             startFrame = ProfilerApi.LastFrameIndex;
@@ -174,7 +181,11 @@ namespace PerfAgent.Core
             PanelCaptureData data;
             if (last < 0)
             {
-                data = new PanelCaptureData { unavailableReason = DescribeProfilerState() };
+                data = new PanelCaptureData
+                {
+                    unavailableReason = DescribeProfilerState()
+                        + (string.IsNullOrEmpty(_ladderNote) ? "" : "。" + _ladderNote)
+                };
             }
             else if (!CaptureWindow.TryResolve(startFrame, ProfilerApi.FirstFrameIndex, last,
                                                out firstFrame, out lastFrame, out inferred))
@@ -199,6 +210,11 @@ namespace PerfAgent.Core
                     data.notes.Add("本次采集开始时读到的面板帧号来自上一个 Profiling 会话（进/退 Play 或清空帧数据"
                         + "会让帧号从头算），所以起点已自动重定到面板里最早的一帧 —— 不重定的话帧数会恒算成 0"
                         + "（界面上就是「一直记录 0 帧」）。窗口因此可能包含采集开始前后的少量帧。");
+                }
+                // 记录目标阶梯的结论必须跟着数据走：报告里得能看出这份数据是在哪种目标下录的。
+                if (data != null && !string.IsNullOrEmpty(_ladderNote))
+                {
+                    data.notes.Add(_ladderNote);
                 }
             }
 
@@ -258,7 +274,7 @@ namespace PerfAgent.Core
             AdoptStartFrame(last);
             CapturedCount = (startFrame < 0 || last < startFrame) ? 0 : last - startFrame;
 
-            // 采集进行中却一直没帧：当场把原因说出来，而不是等收尾时交一份「干净」报告。
+            // 采集进行中却一直没帧：当场说一声（具体自救在下面的记录目标阶梯里）。
             // 实测：用户玩了几十秒、两份报告都只剩资源类结论，因为 Profiler 一直没在记录帧。
             if (!_warnedNoFrames && last < 0 && _clock.Elapsed.TotalSeconds > 2.0)
             {
@@ -268,12 +284,10 @@ namespace PerfAgent.Core
                     + " 秒，但 Profiler 一帧都没录到（enabled=" + ProfilerApi.EnabledRaw
                     + "，profileEditor=" + ProfilerApi.ProfileEditor
                     + "，historyLength=" + ProfilerApi.MaxHistoryLength + "）。"
-                    + (ProfilerApi.ProfileEditor
-                        ? "记录目标已是编辑器，却仍不写帧：请检查 Profiler 窗口是不是处于暂停（Record 红点没亮）或系统内存告警导致 Unity 自己丢帧。"
-                        : "记录目标不是编辑器（profileEditor=false）—— 这个状态下 Play 也不会写帧。"
-                          + "请手动打开一次 Profiler 窗口（窗口会把目标切回编辑器），然后再开始采集。")
-                    + "否则这次采集不会产出任何帧数据，报告里只剩工程级审计。");
+                    + "正在按顺序实测三种记录目标组合（见后续日志）。");
             }
+
+            RunTargetLadder(last);
 
             if (_onProgress != null)
             {
@@ -285,6 +299,80 @@ namespace PerfAgent.Core
             bool timeUp = durationSeconds > 0 && _clock.Elapsed.TotalSeconds >= durationSeconds;
             bool framesUp = targetFrames > 0 && CapturedCount >= targetFrames;
             if (timeUp || framesUp) Stop(true);
+        }
+
+        /// <summary>
+        /// 面板一帧都不写时的**记录目标试探阶梯**（判定逻辑在 <see cref="RecordingTargetLadder"/>，离线有测试）。
+        ///
+        /// 为什么不做成「一上来就强行切某个目标」：那个开关（<c>ProfilerDriver.profileEditor</c>）
+        /// 在 Play 模式下到底该取什么值，文档里查不到，凭猜已经猜错过一次 ——
+        /// 强行切过去可能把本来能用的路径弄坏（用户昨天手动 Play 能采到，就是这个路径）。
+        /// 所以：先不动，真的不出帧再按顺序试，并把「哪一步有效」写进日志与快照备注。
+        /// 帧数据本来就是 0，每一步清空历史是零代价。
+        /// </summary>
+        void RunTargetLadder(int last)
+        {
+            if (_ladderDone) return;
+
+            double sec = _clock.Elapsed.TotalSeconds;
+
+            if (_ladderStep < 0)
+            {
+                if (last >= 0) return;   // 有帧就完全不需要这套东西
+                _ladderStep = 0;
+                _ladderStepStart = sec;
+                _ladderBaseline = last;
+                return;
+            }
+
+            bool sawNewFrames = last >= 0 && last != _ladderBaseline;
+            var action = RecordingTargetLadder.Decide(_ladderStep, sec - _ladderStepStart, sawNewFrames);
+
+            if (action == RecordingTargetLadder.Action.Wait) return;
+
+            if (action == RecordingTargetLadder.Action.Accept)
+            {
+                _ladderDone = true;
+                if (_ladderStep > 0)
+                {
+                    _ladderNote = "采集开始时 Profiler 一帧都没写；工具按顺序实测后，在「"
+                        + RecordingTargetLadder.Describe(_ladderStep) + "」下开始出帧（前 "
+                        + _ladderStep + " 种组合不写帧）。";
+                    UnityEngine.Debug.Log("[PerfAgent] " + _ladderNote);
+                }
+                return;
+            }
+
+            if (action == RecordingTargetLadder.Action.GiveUp)
+            {
+                _ladderDone = true;
+                _ladderNote = RecordingTargetLadder.AllStepsFailed;
+                UnityEngine.Debug.LogWarning("[PerfAgent] " + RecordingTargetLadder.AllStepsFailed
+                    + "\n" + DescribeProfilerState()
+                    + "\n编辑器是否在 Play：" + EditorApplication.isPlaying
+                    + "，是否暂停：" + EditorApplication.isPaused
+                    + "。菜单 Tools/PerfAgent/API 探针 里能看到 ProfilerDriver 全部静态成员的真值。");
+                return;
+            }
+
+            // Advance：换下一种记录目标，再观察一段时间
+            _ladderStep++;
+            _ladderStepStart = sec;
+            _ladderBaseline = last;
+
+            var editorTarget = RecordingTargetLadder.ProfileEditorFor(_ladderStep);
+            try
+            {
+                // 清帧 + 关一次再开 + 按需切目标（此刻帧数是 0，清历史不丢东西）
+                ProfilerApi.RestartRecording(!editorTarget.HasValue || editorTarget.Value);
+                if (editorTarget.HasValue && !editorTarget.Value) ProfilerApi.ProfileEditor = false;
+            }
+            catch { }
+
+            UnityEngine.Debug.Log("[PerfAgent] 面板一直不写帧，试第 " + _ladderStep + " 种记录目标："
+                + RecordingTargetLadder.Describe(_ladderStep)
+                + "（enabled=" + ProfilerApi.EnabledRaw
+                + "，profileEditor=" + ProfilerApi.ProfileEditor + "）");
         }
 
         // =====================================================================
