@@ -484,7 +484,8 @@ namespace PerfAgent.UI
                     string summary = _live.Summary(true);
                     SetStatus(summary.Length > 0
                         ? summary
-                        : ("跟随采集中（你自己操作）：Profiler 已记录 " + frames + " 帧。"));
+                        : ("跟随采集中（你自己操作）："
+                           + CaptureWindow.CountLabel(frames, FollowCapture.RetainedFrames) + "。"));
                 }
                 return;
             }
@@ -791,7 +792,7 @@ namespace PerfAgent.UI
             string text;
             if (w.Count == 0)
             {
-                text = "等 Profiler 出数…（已记录 " + FollowCapture.CapturedFrames + " 帧）";
+                text = "等 Profiler 出数…（" + CaptureWindow.CountLabelShort(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames) + "）";
             }
             else
             {
@@ -799,7 +800,7 @@ namespace PerfAgent.UI
                      + "　帧耗时 P50 " + w.P50Ms().ToString("0.##", culture)
                      + " / P95 " + w.P95Ms().ToString("0.##", culture)
                      + " / 峰值 " + w.MaxMs().ToString("0.##", culture) + " ms"
-                     + "　已记录 " + FollowCapture.CapturedFrames + " 帧";
+                     + "　" + CaptureWindow.CountLabelShort(FollowCapture.CapturedFrames, FollowCapture.RetainedFrames);
             }
             if (!_positionWritable)
                 text += "　·　停靠中：拖成浮动窗口才能缩小";

@@ -34,11 +34,13 @@ namespace PerfAgent.Core
         const string SessionKey = "PerfAgent.FollowCapture.Armed";
 
         /// <summary>
-        /// 单次跟随采集的帧数硬上限。
+        /// 单次跟随采集的帧数**软上限**（只提示，不结束采集）。
         ///
-        /// 「时长不限」不等于「内存不限」：以前这里是 100 万帧（因为要自己存下每一帧），
-        /// 现在数据直接读 Profiler 面板，真正的上限是**面板自己的帧历史长度**（默认约两千帧），
-        /// 超过就被面板丢掉了 —— 这个常量只是安全阀。
+        /// 「时长不限」不等于「内存不限」：数据直接读 Profiler 面板，真正的上限是
+        /// **面板自己的帧历史长度**（默认约两千帧，实测有的机器卡在 300），超过就被面板丢掉。
+        /// 以前把这个常量当成停止条件，结果用户玩到一半（约 2 万帧）采集自己结束了 ——
+        /// 这并不会「保住」什么（前面的帧早被面板丢了），也把「时长不限」变成了假承诺。
+        /// 现在它只用来在日志里提一句「窗口已经在滚动」，采到多少由你决定何时停。
         /// </summary>
         public const int MaxFrames = 20000;
 
@@ -53,6 +55,9 @@ namespace PerfAgent.Core
 
         /// <summary>已采帧数（界面用来显示实时进度）。</summary>
         public static int CapturedFrames { get { return _capture == null ? 0 : _capture.CapturedCount; } }
+
+        /// <summary>面板此刻实际保留的帧数（采得比它多时，分析用的是最近这一段）。</summary>
+        public static int RetainedFrames { get { return _capture == null ? 0 : _capture.RetainedFrames(); } }
 
         /// <summary>最近一次收尾产出的快照 id。</summary>
         public static string LastSnapshotId = "";
@@ -182,10 +187,13 @@ namespace PerfAgent.Core
 
             _armed = false;
 
-            var capture = new PanelCapture(MaxFrames, delegate (PanelCaptureData data)
+            // 帧数目标传 0（不限）：跟随采集的结束条件是「你退出 Play / 手动停止」，
+            // 而不是某个帧数 —— 面板历史会自己滚动，硬停只会把玩到一半的人断掉（实测反馈）。
+            var capture = new PanelCapture(0, delegate (PanelCaptureData data)
             {
                 Complete(data);
             }, null);
+            capture.softNoticeFrames = MaxFrames;
 
             // 丢掉进入 Play 的头 1 秒：域重载 + 首次 Shader 编译 + 资源初始化都集中在那里，
             // 实测空场景第 2 帧就有 87 ms —— 那是引擎/编辑器的启动成本，不是项目的每帧开销。

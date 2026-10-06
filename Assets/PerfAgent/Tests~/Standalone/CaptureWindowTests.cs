@@ -23,6 +23,33 @@ namespace PerfAgent.RuleRegression
             tests.Add(CaptureWindowRejectsWhenNoNewFrames);
             tests.Add(SessionRestartRebasesTheStartFrame);
             tests.Add(LiveStatsRebaseOnFrameIndexRestart);
+            tests.Add(CountLabelIsHonestWhenPanelRolled);
+        }
+
+        /// <summary>
+        /// 「已记录 N 帧」不能只报采到的帧数：面板只保留最近一段帧，采久了只分析这一段。
+        /// 实测反馈：跟随采到 2 万帧时采集自己结束了（当时帧数被当成了停止条件），
+        /// 而且界面上写「已记录 20000 帧」会让人以为报告覆盖了全程 —— 实际上只有最后几百帧。
+        /// </summary>
+        static void CountLabelIsHonestWhenPanelRolled()
+        {
+            Same("已记录 0 帧", CaptureWindow.CountLabel(0, 0), "没采到就得说 0");
+            Same("已记录 812 帧", CaptureWindow.CountLabel(812, 2000), "窗口没装满时不要画蛇添足");
+            Same("已记录 2000 帧", CaptureWindow.CountLabel(2000, 2000), "刚好装满时也不用解释");
+
+            string rolled = CaptureWindow.CountLabel(20000, 300);
+            True(rolled.IndexOf("20000", StringComparison.Ordinal) >= 0, "采到的帧数要保留：" + rolled);
+            True(rolled.IndexOf("300", StringComparison.Ordinal) >= 0, "必须写出实际分析多少帧：" + rolled);
+            True(rolled.IndexOf("分析", StringComparison.Ordinal) >= 0, "得点明分析只用这一段：" + rolled);
+
+            // 细条只有一行：短写法必须比长写法短，且仍然带两个数字
+            string shortForm = CaptureWindow.CountLabelShort(20000, 300);
+            True(shortForm.Length < rolled.Length, "细条用短写法：" + shortForm);
+            True(shortForm.IndexOf("20000", StringComparison.Ordinal) >= 0, shortForm);
+            True(shortForm.IndexOf("300", StringComparison.Ordinal) >= 0, shortForm);
+
+            // 拿不到面板保留量时不能编造，退回普通写法
+            Same("已记录 500 帧", CaptureWindow.CountLabel(500, 0), "保留量未知时退普通写法");
         }
 
         /// <summary>
@@ -114,6 +141,11 @@ namespace PerfAgent.RuleRegression
         static void False(bool condition, string message)
         {
             if (condition) throw new Exception(message);
+        }
+
+        static void Same(string expected, string actual, string label)
+        {
+            if (expected != actual) throw new Exception(label + "：期望「" + expected + "」，实际「" + actual + "」");
         }
     }
 }

@@ -51,6 +51,30 @@ namespace PerfAgent.Utils
         }
 
         /// <summary>
+        /// 「已记录 N 帧」的**诚实写法**：采到的帧数超过面板保留量时，把「分析只用最近多少帧」写出来。
+        ///
+        /// 为什么不能只显示采到的帧数（实测反馈）：面板只保留最近一段帧，采得再久也只分析这一段 ——
+        /// 只写「已记录 20000 帧」会让人以为报告覆盖了全程，实际上只有最后几百帧。
+        /// </summary>
+        public static string CountLabel(int captured, int retained)
+        {
+            if (captured <= 0) return "已记录 0 帧";
+            if (retained <= 0 || captured <= retained) return "已记录 " + captured + " 帧";
+            return "已记录 " + captured + " 帧（面板只保留最近 " + retained + " 帧，分析用这 " + retained + " 帧）";
+        }
+
+        /// <summary>
+        /// 上面的**短写法**，给只有一行宽的细条用：细条上帧率/帧耗时才是主角，
+        /// 帧数一长就会把前面的数字挤到看不见（实测：长句被裁成省略号，反而看不到 FPS）。
+        /// </summary>
+        public static string CountLabelShort(int captured, int retained)
+        {
+            if (captured <= 0) return "已记录 0 帧";
+            if (retained <= 0 || captured <= retained) return "已记录 " + captured + " 帧";
+            return "已记录 " + captured + " 帧 · 窗口 " + retained + " 帧";
+        }
+
+        /// <summary>
         /// Profiler **会话重启**时把采集起点重定到面板里最早的一帧。
         ///
         /// 为什么要单独处理：面板帧号是**按 Profiling 会话**递增的，进/退 Play 或清空帧数据之后

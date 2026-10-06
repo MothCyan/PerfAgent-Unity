@@ -30,6 +30,16 @@ namespace PerfAgent.Core
         /// <summary>目标帧数（0 = 不限，只按时长/手动结束）。</summary>
         public int targetFrames = 300;
 
+        /// <summary>
+        /// 软上限：达到这个帧数只在日志里**提示一次**，**不结束采集**。0 = 不提示。
+        ///
+        /// 为什么不再拿它当停止条件（2026-10-07 用户反馈「采到 20000 帧左右会自动退出采集」）：
+        /// 真正的上限是**面板自己的帧历史**（默认 2000，实测有的机器卡在 300），采到 2 万帧时
+        /// 前面的帧早被面板丢掉了 —— 在这里停止并不会「保住」任何数据，只会在用户玩到一半时把采集掐断。
+        /// 面板历史会自己滚动，分析窗口跟着滚动即可（起点被挤出时会写进快照备注）。
+        /// </summary>
+        public int softNoticeFrames;
+
         /// <summary>&gt;0 表示按时间结束：跑够这么多秒就停，targetFrames 退化为安全上限。</summary>
         public double durationSeconds;
 
@@ -57,6 +67,9 @@ namespace PerfAgent.Core
         double _nextPoll;
         int _pollIntervalMs = 250;
         bool _warnedNoFrames;
+
+        /// <summary>软上限只提示一次（采集期间刷日志本身会产生分配）。</summary>
+        bool _noticedSoftCap;
 
         /// <summary>记录目标试探阶梯的步号；-1 = 还没启动（有帧就不需要启动）。</summary>
         int _ladderStep = -1;
@@ -216,6 +229,15 @@ namespace PerfAgent.Core
                 {
                     data.notes.Add(_ladderNote);
                 }
+                // 玩很久的会话：起点之后的帧已被面板挤出历史 —— 必须写明「结论只描述最近这一段」，
+                // 否则用户会以为报告覆盖了他玩的全程（实测反馈过这个误会）。
+                if (data != null && data.available && startFrame >= 0
+                    && ProfilerApi.FirstFrameIndex > startFrame + 1)
+                {
+                    data.notes.Add("这次采了很久：起点之后的帧已经被面板挤出历史（面板只保留最近 "
+                        + RetainedFrames() + " 帧），所以分析窗口 = 面板里最早的一帧（" + firstFrame
+                        + "）到最新一帧 —— 结论描述的是**最近这一段**，不是玩的全程。");
+                }
             }
 
             StatRecorder.Dispose(ref _gcAllocRegistration);
@@ -236,6 +258,13 @@ namespace PerfAgent.Core
             if (startFrame >= 0 || last < 0) return;
             startFrame = last;
             startFrameInferred = true;
+        }
+
+        /// <summary>面板此刻实际保留着多少帧（早于这个范围的帧已经被面板丢掉）。</summary>
+        public int RetainedFrames()
+        {
+            int f = ProfilerApi.FirstFrameIndex, l = ProfilerApi.LastFrameIndex;
+            return (f < 0 || l < f) ? 0 : l - f + 1;
         }
 
         /// <summary>面板一帧都没有时的原因——把 Profiler 的实际状态写出来，下次能直接定位。</summary>
@@ -288,6 +317,15 @@ namespace PerfAgent.Core
             }
 
             RunTargetLadder(last);
+
+            // 软上限：只提示、不结束 —— 真上限是面板历史，它会自己滚动。
+            if (softNoticeFrames > 0 && !_noticedSoftCap && CapturedCount >= softNoticeFrames)
+            {
+                _noticedSoftCap = true;
+                UnityEngine.Debug.Log("[PerfAgent] 已采 " + CapturedCount + " 帧；面板只保留最近 "
+                    + RetainedFrames() + " 帧，分析用的就是这最近一段（窗口跟着面板滚动，不会因此丢结论）。"
+                    + "想结束就退出 Play 或点细条上的「停止采集」。");
+            }
 
             if (_onProgress != null)
             {
