@@ -370,6 +370,21 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
   完整状态进 tooltip —— 「采集在跑、数字不动」时用户分不清是工具坏了还是 Profiler 没录，
   不能只靠 Console 里的一条 Warning。
 
+**踩过的第二个坑：`ProfilerDriver.enabled` 的读法把排查带偏了。**
+`ProfilerApi.Enabled` 的 getter 为了兼容写成了 `enabled || profileEditor`（历史代码里想让
+「Profiler 窗口开着」也算在录）。结果是「`profileEditor=true`、`enabled=false`」这种状态
+**被读成「正在记录」**，于是 0 帧时的报错说「Profiler 在记录但没写出帧」——方向完全错，
+真正该做的是把 `enabled` 打开。现在的口径：
+
+- 新增 **`ProfilerApi.EnabledRaw`**（只读 `enabled`，不做任何兜底）与 `EnsureEnabled()`（写后读回校验），
+  诊断 / 报错 / 自愈一律用 `EnabledRaw`；合并读法只留给「人看的探针输出」；
+- `ProfilerApi.RestartRecording(keepEditorFrames)`：清帧 → `enabled=false` → 重新开启 → 可选恢复 `profileEditor`，
+  用于把偶发的「开着但什么都不写」的僵死记录会话换掉；
+- 采集期间持续 10 秒 0 帧：Console 打一条**含前后两个开关真值**的警告，并**强制重开一次记录会话**
+  （此刻帧数是 0，清历史不丢东西；只自愈一次，免得采集期间刷日志产生分配）；
+- API 探针里 `enabled` / `profileEditor` / 合并读法**分开列**，避免再次误判。
+
+
 ### 10.8 工程级扫描必须按「当前场景目录」分组
 
 同一个工程里可以同时存在同一玩法的多份副本（本仓库的 `Assets/PerfAgentSample/{Before,After}` 就是），
@@ -546,7 +561,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
   表格 → 「列 · 列」（丢掉 `|---|` 分隔行）；代码围栏 → 删围栏、保留内容并缩进；
   尖括号先转义（内容不能注入标签）。
 
-### 11.8 两个 UI Toolkit 坑（都把人坑过，写了注释）
+### 11.8 几个 UI Toolkit 坑（都把人坑过，写了注释）
 
 1. **别把 `flexGrow` 直接加在 `ScrollView` 上**。ScrollView 的基准高度 = 内容高度，
    如果外层卡片是 `flexShrink = 0`，卡片就会被内容撑破 —— 表现是记录区**自己没有滚动条**
@@ -563,7 +578,14 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
      **读回来比对**，对不上就当它停靠，并在细条文字里写明「拖成浮动窗口才能真缩小」；
    - **进 Play 必然触发域重载**，字段会被清空，但窗口尺寸是持久的：重载后再收起时当前尺寸
      可能**已经是细条**，若直接把它记成「原来的尺寸」，采集结束就会「恢复」成 520x32、面板再也用不了。
-     所以收起前要判断「看起来像不像细条」，并把原尺寸存进 `SessionState`（跨域重载有效）。
+     所以收起前要判断「看起来像不像细条」，并把原尺寸存进 `SessionState`（跨域重载有效）；
+   - **只有一行高的窗口里，内边距 + 换行会让两行文字叠在一起**（实测就是这么坏的）：细条 32px，
+     根容器还留着面板用的内边距，再叠上会被压高度、但**默认不裁剪**的文字（UI Toolkit 不像 CSS，
+     flex 子元素被压得过小时内容会溢出并**和相邻元素画在同一片像素上**）。所以要三件一起做：
+     ① 收起时把根容器内边距压到 4（并记住原值、展开时还原）；
+     ② 文字元素显式 `whiteSpace = WhiteSpace.NoWrap` + `textOverflow = TextOverflow.Ellipsis`；
+     ③ 承载它的条 `overflow = Overflow.Hidden`。
+     另外：**进度/状态文案要短**，长句永远会在 520px 里折叠（真正的原因放进 tooltip / Console）。
 
 ### 11.9 对话历史体检（一次真事故）
 

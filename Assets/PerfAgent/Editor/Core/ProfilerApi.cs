@@ -123,6 +123,43 @@ namespace PerfAgent.Core
         }
 
         /// <summary>
+        /// 只读 <c>ProfilerDriver.enabled</c>（**不做** profileEditor 兜底）。
+        ///
+        /// 为什么要单独暴露：<see cref="Enabled"/> 的 getter 在 <c>enabled</c> 读不到时会拿 <c>profileEditor</c> 顶，
+        /// 于是「profileEditor=true 而 enabled=false」会被报告成「在记录」——
+        /// 实测表现就是采集在跑、<see cref="LastFrameIndex"/> 恒为 -1，而日志却说 Profiler 在记录（把排查带偏）。
+        /// 现在：诊断、自愈、闸门都用这个真值。
+        /// </summary>
+        public static bool EnabledRaw
+        {
+            get { var v = Reflect.GetStatic(Driver, "enabled"); return v is bool && (bool)v; }
+        }
+
+        /// <summary>显式把「记录」打开并回读确认（不走兜底）。已是开的时候返回 true。</summary>
+        public static bool EnsureEnabled()
+        {
+            if (EnabledRaw) return true;
+            Reflect.SetStatic(Driver, "enabled", true);
+            return EnabledRaw;
+        }
+
+        /// <summary>
+        /// 强制重开一次记录会话：清空帧历史 → 关一次 enabled → 再打开。
+        ///
+        /// 用在「采集在跑、却一帧都没写出来」的自愈上：进/退 Play 的会话切换后偶发这种僵死态，
+        /// 重开一次能救回来；此时帧数本来就是 0，清历史不会丢任何东西。
+        /// </summary>
+        /// <param name="keepEditorFrames">是否同时保持「分析编辑器自身」（非 Play 场景需要它才会写编辑器帧）</param>
+        public static bool RestartRecording(bool keepEditorFrames)
+        {
+            try { ClearAllFrames(); } catch { }
+            try { Reflect.SetStatic(Driver, "enabled", false); } catch { }
+            bool ok = EnsureEnabled();
+            if (keepEditorFrames) ProfileEditor = true;
+            return ok;
+        }
+
+        /// <summary>
         /// 编辑器自身是否在被分析（<c>ProfilerDriver.profileEditor</c>）。
         ///
         /// **非 Play 模式下必须为 true**：只把 <see cref="Enabled"/> 打开的话，Profiler 面板

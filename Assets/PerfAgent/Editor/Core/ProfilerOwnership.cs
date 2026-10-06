@@ -74,7 +74,9 @@ namespace PerfAgent.Core
 
             try
             {
-                if (!ProfilerApi.Enabled) ProfilerApi.Enabled = true;
+                // 用「不做兜底」的真值读：Enabled 的 getter 会拿 profileEditor 顶，
+                // 否则 profileEditor=true + enabled=false 会被当成「已经开着」而不去开（实测踩过）。
+                if (!ProfilerApi.EnabledRaw) ProfilerApi.EnsureEnabled();
                 if (needProfileEditor && !ProfilerApi.ProfileEditor) ProfilerApi.ProfileEditor = true;
 
                 // 面板历史必须是「我们想要的那个值」，不能只在它更大时才压小。

@@ -103,7 +103,13 @@ namespace PerfAgent.UI
             // ---- 1. Profiler 帧数据链路 ----
             sb.Append("【1】Profiler 帧数据链路\n");
             sb.Append(ProfilerApi.DescribeAvailability());
-            sb.Append("Profiler 当前记录状态: ").Append(ProfilerApi.Enabled ? "开启" : "关闭").Append('\n');
+            // 必须把两个开关分开写：Enabled(getter) 会在 enabled 为 false 时拿 profileEditor 顶，
+            // 只报「合并值」会把「profileEditor=true + enabled=false」误报成「正在记录」（实测踩过）。
+            sb.Append("Profiler 记录总开关 enabled = ").Append(ProfilerApi.EnabledRaw).Append('\n');
+            sb.Append("Profiler profileEditor = ").Append(ProfilerApi.ProfileEditor)
+              .Append("（true 时 Profiler 窗口会主动驱动帧写入）\n");
+            sb.Append("合并读法 ProfilerApi.Enabled = ").Append(ProfilerApi.Enabled)
+              .Append("（= enabled || profileEditor，仅供人看）\n");
             sb.Append("帧索引范围: ").Append(ProfilerApi.FirstFrameIndex).Append(" ~ ").Append(ProfilerApi.LastFrameIndex)
               .Append("（共 ").Append(ProfilerApi.FrameCount).Append(" 帧）\n");
 

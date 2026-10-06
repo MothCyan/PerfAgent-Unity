@@ -66,6 +66,10 @@ namespace PerfAgent.UI
         bool _positionWritable = true;
         /// <summary>连续「0 帧」的起点（EditorApplication.timeSinceStartup）；0 = 当前没在数。</summary>
         double _stripZeroSince;
+        /// <summary>本次采集是否已经报过「一直没帧」的详细诊断（只报一次，不刷屏）。</summary>
+        bool _warnedZeroFramesLive;
+        /// <summary>细条模式下根容器的内边距（展开时要还原）。</summary>
+        Vector4 _preStripPadding;
 
         /// <summary>会话的原始 Markdown；显示时统一转成富文本（否则 `**粗体**` 会原样显示星号）。</summary>
         readonly StringBuilder _transcriptRaw = new StringBuilder();
@@ -451,6 +455,8 @@ namespace PerfAgent.UI
                 if (!_stripDoneForThisCapture)
                 {
                     _stripDoneForThisCapture = true;
+                    _warnedZeroFramesLive = false;   // 新一轮采集重新允许报一次「没采到帧」
+                    _stripZeroSince = 0;
                     SetStripped(true, true);
                 }
 
@@ -627,7 +633,11 @@ namespace PerfAgent.UI
             bar.style.backgroundColor = Theme.CardBg;
             Theme.Rounded(bar, Theme.Radius);
             Theme.Border1(bar, Theme.Border);
-            Theme.Pad(bar, 10, 10, 4, 4);
+            Theme.Pad(bar, 8, 8, 2, 2);
+            // 细条只有一行高：禁掉换行 + 裁掉溢出。
+            // 实测踩过：文字换行后超出窗口高度，而 UI Toolkit 父元素默认不裁剪 ——
+            // 多出来的那几行直接画在窗口外/上面，看起来就是「字叠在一起」。
+            bar.style.overflow = Overflow.Hidden;
 
             bar.Add(Theme.Pill("● 跟随采集中", Theme.Accent));
 
@@ -638,6 +648,7 @@ namespace PerfAgent.UI
             _stripLabel.style.marginRight = 10;
             _stripLabel.style.flexGrow = 1;
             _stripLabel.style.flexShrink = 1;
+            _stripLabel.style.whiteSpace = WhiteSpace.NoWrap;   // 只允许一行（诊断详情走 tooltip / Console）
             bar.Add(_stripLabel);
 
             // 展开/收起对用户是手动挡；自动收起只在采集开始时做一次。
@@ -679,6 +690,13 @@ namespace PerfAgent.UI
                 }
 
                 _preStripMinSize = minSize;
+                // 根容器原本有 10/10/8/8 的内边距，在 40 多像素高的窗口里会直接把内容挤到换行溢出 ——
+                // 细条期间把它压到 4，展开时再还原。
+                _preStripPadding = new Vector4(rootVisualElement.style.paddingLeft.value.value,
+                    rootVisualElement.style.paddingRight.value.value,
+                    rootVisualElement.style.paddingTop.value.value,
+                    rootVisualElement.style.paddingBottom.value.value);
+                Theme.Pad(rootVisualElement, 4, 4, 4, 4);
                 // minSize 是浮动窗口的硬约束：不改小的话窗口会被拉回 900x600，细条变成一张大空白面板。
                 minSize = new Vector2(360, 24);
                 if (moveWindow) ApplyStripRect();
@@ -686,6 +704,7 @@ namespace PerfAgent.UI
             else
             {
                 if (_preStripMinSize.x > 1f) minSize = _preStripMinSize;
+                Theme.Pad(rootVisualElement, _preStripPadding.x, _preStripPadding.y, _preStripPadding.z, _preStripPadding.w);
                 if (_preStripRect.width <= 1f && !TryLoadPreStripRect(out _preStripRect))
                     _preStripRect = new Rect(position.x, position.y, 900f, 600f);
                 if (moveWindow) RestoreStripRect();
@@ -772,12 +791,16 @@ namespace PerfAgent.UI
                 text += "　·　面板是停靠状态，缩小不了 —— 把它拖出来（变成浮动窗口）就会自动收成细条";
 
             // 「持续 0 帧」是最难自查的一种状态：采集在跑、数字不动，用户分不清是工具坏了还是 Profiler 没录。
-            // 所以超过 2 秒还是 0，就把原因直接写在条上（完整状态进 tooltip），别让人去 Console 里翻。
+            // 细条只有一行，所以这里只放一个短标记 —— 详细原因 + 自愈动作走 Console（见 WarnNoFramesOnce）。
             if (FollowCapture.Capturing && FollowCapture.CapturedFrames == 0)
             {
                 double now = EditorApplication.timeSinceStartup;
                 if (_stripZeroSince <= 0) _stripZeroSince = now;
-                if (now - _stripZeroSince > 2.0) text += "　·　" + NoFrameReason();
+                if (now - _stripZeroSince > 2.0)
+                {
+                    text += "　·　长时间 0 帧（原因见 Console / tooltip）";
+                    WarnNoFramesOnce(now - _stripZeroSince);
+                }
             }
             else
             {
@@ -795,12 +818,46 @@ namespace PerfAgent.UI
             }
         }
 
-        /// <summary>「采集中但一帧都没录到」的一句话原因（完整状态见 tooltip 与 Console Warning）。</summary>
+        /// <summary>「采集中但一帧都没录到」的一句话原因（也进 Console）。</summary>
         static string NoFrameReason()
         {
-            if (!ProfilerApi.Enabled) return "Profiler 没在记录（enabled=false）：到 Profiler 窗口点亮 Record";
-            if (ProfilerApi.LastFrameIndex < 0) return "Profiler 在记录但还没写出任何帧（last=-1）：稍等或重进一次 Play";
+            // 用 EnabledRaw：Enabled 的 getter 会拿 profileEditor 顶，
+            // 会把「profileEditor 开着、enabled 关着」误报成「在记录」（实测把排查带偏过）。
+            if (!ProfilerApi.EnabledRaw)
+                return "Profiler 没在记录（ProfilerDriver.enabled=false）：到 Profiler 窗口点一下 Record";
+            if (ProfilerApi.LastFrameIndex < 0)
+                return "ProfilerDriver.enabled=true 但一帧都没写出来（lastFrameIndex=-1）";
             return "Profiler 有帧（last=" + ProfilerApi.LastFrameIndex + "）但本次起点对不上，已自动重定 —— 再等一帧";
+        }
+
+        /// <summary>
+        /// 采集期间长时间 0 帧：报一次详细诊断，并**强制重开一次记录会话**（清历史 + 关一次再开）。
+        ///
+        /// 为什么要自愈：进/退 Play 的会话切换后偶发「enabled 看着是开的、就是什么都不写」的僵死态；
+        /// 重开一次能救回来，而此刻帧数是 0，清历史不会丢任何东西。
+        /// 只报一次、只自愈一次 —— 采集期间刷日志本身会产生分配，会污染测量。
+        /// </summary>
+        void WarnNoFramesOnce(double zeroSeconds)
+        {
+            if (_warnedZeroFramesLive) return;
+            _warnedZeroFramesLive = true;
+
+            bool enabledBefore = ProfilerApi.EnabledRaw;
+            bool editorBefore = ProfilerApi.ProfileEditor;
+            bool restarted = false;
+            try { restarted = ProfilerApi.RestartRecording(editorBefore); }
+            catch { }
+
+            Debug.LogWarning("[PerfAgent] 采集已开始 " + zeroSeconds.ToString("0.#", CultureInfo.InvariantCulture)
+                + " 秒，但一帧都没采到：" + NoFrameReason()
+                + "\n" + PanelCapture.DescribeProfilerState()
+                + "\n已强制重开一次 Profiler 记录会话（enabled: " + enabledBefore + " → " + ProfilerApi.EnabledRaw
+                + "，profileEditor: " + editorBefore + " → " + ProfilerApi.ProfileEditor
+                + "，成功=" + restarted + "）。"
+                + "\n若仍为 0 帧，请依次："
+                + "\n  1) 打开 Profiler 窗口，确认左上角的 Record（红点）是亮着的、且窗口没在暂停状态；"
+                + "\n  2) 菜单 Tools/PerfAgent/API 探针 → 把 Profiler 小节截图（那里列出各 API 的实际值）；"
+                + "\n  3) 若探针里 lastFrameIndex 也一直为 -1，把这条日志发给开发者。");
         }
 
 

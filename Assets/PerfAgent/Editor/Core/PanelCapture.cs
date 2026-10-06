@@ -104,6 +104,13 @@ namespace PerfAgent.Core
             // 窗口从「现在之后的第一帧」开始（这里之后录进来的都是被测期间）
             startFrame = ProfilerApi.LastFrameIndex;
 
+            // 开始那一刻就没有帧可读时，把 Profiler 的真实状态写下来：
+            // 之后如果一直 0 帧，这条日志与后续的「长时间 0 帧」警告能直接对上号（实测排查很省时间）。
+            if (startFrame < 0)
+            {
+                UnityEngine.Debug.Log("[PerfAgent] 采集开始：面板暂无可读帧。" + DescribeProfilerState());
+            }
+
             // 点亮 GC 分配计数器：不订阅的话它不会逐帧记录，面板序列读出来是空的
             // （实测 300 帧里只有 1 帧有值）。只挂订阅，不读值 —— 不是逐帧采样。
             _gcAllocRegistration = StatRecorder.Register(ProfilerCategory.Memory, StatRecorder.GcAllocCounters);
@@ -214,7 +221,7 @@ namespace PerfAgent.Core
         /// <summary>面板一帧都没有时的原因——把 Profiler 的实际状态写出来，下次能直接定位。</summary>
         public static string DescribeProfilerState()
         {
-            return "Profiler 面板一帧都没录到（enabled=" + ProfilerApi.Enabled
+            return "Profiler 面板一帧都没录到（enabled=" + ProfilerApi.EnabledRaw
                 + "，profileEditor=" + ProfilerApi.ProfileEditor
                 + "，historyLength=" + ProfilerApi.MaxHistoryLength
                 + "，firstFrameIndex=" + ProfilerApi.FirstFrameIndex
@@ -253,7 +260,7 @@ namespace PerfAgent.Core
                 _warnedNoFrames = true;
                 UnityEngine.Debug.LogWarning("[PerfAgent] 采集已开始 "
                     + _clock.Elapsed.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture)
-                    + " 秒，但 Profiler 一帧都没录到（enabled=" + ProfilerApi.Enabled
+                    + " 秒，但 Profiler 一帧都没录到（enabled=" + ProfilerApi.EnabledRaw
                     + "，profileEditor=" + ProfilerApi.ProfileEditor
                     + "，historyLength=" + ProfilerApi.MaxHistoryLength + "）。"
                     + "请到 Profiler 窗口确认 Record 是开着的（本工具会自动打开，但被手动暂停时不会自己恢复）；"
