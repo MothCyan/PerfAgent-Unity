@@ -194,18 +194,7 @@ namespace PerfAgent.Analysis
                 // 平均每帧分配：口径优先级与规则侧一致（面板/Recorder 的 GC Allocated In Frame 优先，
                 // 退到 GC.GetTotalMemory 差值时标明，拿不到就写「不可用」）。
                 // 以前这里恒为 0 B —— 与上面「每帧托管分配 14435 B」直接打架。
-                double allocPerFrame = s.MetricValue("每帧托管分配");
-                string allocNote = "（Profiler 面板序列）";
-                if (double.IsNaN(allocPerFrame))
-                {
-                    allocPerFrame = s.AvgRecorderAllocPerFrame();
-                    allocNote = "（ProfilerRecorder）";
-                }
-                if (double.IsNaN(allocPerFrame))
-                {
-                    allocPerFrame = s.AvgManagedAllocBytesPerFrame();
-                    allocNote = "（GC.GetTotalMemory 差值，弱口径）";
-                }
+                double allocPerFrame = s.AverageAllocPerFrame(out string allocNote);
                 sb.Append("| 平均每帧分配 | ")
                   .Append(double.IsNaN(allocPerFrame) ? "不可用" : Fmt(allocPerFrame) + " B " + allocNote)
                   .Append(" |\n");
@@ -229,11 +218,17 @@ namespace PerfAgent.Analysis
                     for (int i = 0; i < frames.Count && i < 10; i++)
                     {
                         var f = frames[i];
+                        // 分配取面板序列（allocInFrameBytes），不是 GC.GetTotalMemory 差值那个弱口径 ——
+                        // 后者在面板采集路径上恒为 0，直接印会让「分配」列全是 0（实测：133 ms 的尖峰被读成「那帧没分配」）。
+                        long alloc = f.DisplayAllocBytes;
                         sb.Append("| ").Append(f.frame).Append(" | ").Append(Fmt(f.deltaMs)).Append(" | ")
-                          .Append(f.managedAllocBytes).Append(" | ").Append(f.drawCalls).Append(" | ")
-                          .Append(Fmt(f.tempAllocBytes / 1048576.0)).Append(" |\n");
+                          .Append(alloc > 0 ? alloc.ToString(CultureInfo.InvariantCulture) : "—").Append(" | ")
+                          .Append(f.drawCalls > 0 ? f.drawCalls.ToString(CultureInfo.InvariantCulture) : "—").Append(" | ")
+                          .Append(f.tempAllocBytes > 0 ? Fmt(f.tempAllocBytes / 1048576.0) : "—").Append(" |\n");
                     }
                     sb.Append('\n');
+                    sb.Append("> `—` = 该帧这一项没采到（逐帧明细只保证帧耗时可用）；整段的"
+                              + "分配 / Draw Call 统计看上面的指标表。\n\n");
                 }
             }
 

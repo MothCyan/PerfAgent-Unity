@@ -31,6 +31,7 @@ namespace PerfAgent.RuleRegression
                 ZeroFrameCaptureIsReportedAsError,
                 CodeFindingsAreSplitBySceneDirectory,
                 EventCallbackFindingsAreNotCalledPerFrame,
+                FrameAllocDisplayNeverFakesZero,
                 AllocGatesAreRecordedForEveryOutcome,
                 CodeScanExplanationSelfProvesZero,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
@@ -337,6 +338,37 @@ namespace PerfAgent.RuleRegression
             Equal(Severity.Error, frameFinding.severity, "每帧方法里的 Error 级反模式保持 Error");
             True(frameFinding.title.IndexOf("每帧方法中出现", StringComparison.Ordinal) >= 0, frameFinding.title);
             EvidenceContains(frameFinding, "执行时机", "每帧");
+        }
+
+        /// <summary>
+        /// 实测：报告「最慢的 10 帧」里分配列全是 **0** —— 它抄的是 GC.GetTotalMemory 差值那个弱口径，
+        /// 而面板采集路径上那个字段恒为 0。于是 133 ms 的卡顿尖峰被读成「那一帧没分配」。
+        /// 现在：面板序列优先，拿不到就印「—」；平均分配拿不到时写「不可用」而不是 0。
+        /// </summary>
+        static void FrameAllocDisplayNeverFakesZero()
+        {
+            var panel = new FrameStat { frame = 89105, deltaMs = 133.52, allocInFrameBytes = 23438, managedAllocBytes = 0 };
+            Equal(23438.0, (double)panel.DisplayAllocBytes, "有面板序列值时用它");
+
+            var weak = new FrameStat { frame = 1, deltaMs = 5, allocInFrameBytes = 0, managedAllocBytes = 999 };
+            Equal(999.0, (double)weak.DisplayAllocBytes, "没有面板序列时退回弱口径");
+
+            var none = new FrameStat { frame = 2, deltaMs = 5 };
+            Equal(-1.0, (double)none.DisplayAllocBytes, "都没有时返回 -1（调用方印「—」而不是 0）");
+
+            var snapshot = CleanSnapshot();
+            snapshot.capturedFrameCount = 150;
+            snapshot.SetMetric("每帧托管分配", "B", 16488.29, "Profiler 面板序列");
+            string caliber;
+            double avg = snapshot.AverageAllocPerFrame(out caliber);
+            True(Math.Abs(avg - 16488.29) < 0.01, "面板序列优先：" + avg);
+            True(caliber.IndexOf("面板序列", StringComparison.Ordinal) >= 0, "口径要写出来：" + caliber);
+
+            var noData = CleanSnapshot();
+            noData.capturedFrameCount = 150;
+            double missing = noData.AverageAllocPerFrame(out caliber);
+            True(double.IsNaN(missing), "拿不到分配数据时必须返回 NaN（0 B/帧 看起来像「零分配」这个好消息）");
+            True(caliber.IndexOf("不可用", StringComparison.Ordinal) >= 0, "要明说不可用：" + caliber);
         }
 
         /// <summary>

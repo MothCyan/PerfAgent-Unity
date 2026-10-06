@@ -285,7 +285,12 @@ JsonlAnalysisStore.Current = new SqliteAnalysisStore();   // 启动处替换
 
 - **面板序列（整段窗口）优先**于单点读数，同一计数器的单点读数不再覆盖它；
 - 单点读数 ≤ 0 一律按「读不到」处理，并在附录里列出是哪几个计数器、为什么；
-- `GC.MaxGeneration` 这类被误用成「堆上限」的指标直接删除（它是 GC 代数编号 0/1/2，不是字节数）。
+- `GC.MaxGeneration` 这类被误用成「堆上限」的指标直接删除（它是 GC 代数编号 0/1/2，不是字节数）；
+- **逐帧表里的「分配」列一律不能印 0**：实测报告与面板都直接抄了 `managedAllocBytes`
+  （`GC.GetTotalMemory` 差值那个弱口径，面板采集路径上恒为 0），于是「最慢的 10 帧」表里
+  133 ms 的卡顿尖峰被展示成「分配 0 B」。现在取 `FrameStat.DisplayAllocBytes`
+  （面板序列优先，拿不到返回 -1）→ 显示「—」；平均分配走 `PerfSnapshot.AverageAllocPerFrame(out caliber)`，
+  拿不到就写「不可用」而不是 0（0 B/帧 会被当成「零分配」这个好消息）。
 
 ### 10.3 样本量不足不下统计结论
 
@@ -394,7 +399,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 
 ### 10.9 验收方式
 
-每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 81 项）：
+每条闸门都有一条实测回归用例钉住（`Tests~/Standalone`，`dotnet run -c Release`，共 82 项）：
 
 | 用例 | 钉住的行为 |
 |---|---|
@@ -408,6 +413,7 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 | `AllocGatesAreRecordedForEveryOutcome` | 分配闸门的三种结局都留记录（未过归因地板 / 通过 / 缺数据），含口径提示；底稿与本地回答都必须带上闸门口径 |
 | `CodeScanExplanationSelfProvesZero` | 扫描 0 处必须自带覆盖率与作用域；扫描没跑时不能只说「0 处」 |
 | `EventCallbackFindingsAreNotCalledPerFrame` | 碰撞/触发回调里的写法不得说成「每帧方法中出现」，级别封顶到警告，证据里写清执行时机 |
+| `FrameAllocDisplayNeverFakesZero` | 逐帧分配取面板序列（不是恒为 0 的弱口径），拿不到返回 -1/NaN 并由调用方印「—」「不可用」 |
 
 ---
 

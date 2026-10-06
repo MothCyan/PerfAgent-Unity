@@ -140,6 +140,24 @@ namespace PerfAgent.Core
         public long managedAllocBytes;
         /// <summary>ProfilerRecorder「GC Allocated In Frame」，与 Profiler 窗口的 GC Alloc 列同源。0 表示该计数器不可用。</summary>
         public long allocInFrameBytes;
+
+        /// <summary>
+        /// 某一帧能拿出来展示的分配量（字节）；拿不到返回 -1，调用方印「—」。
+        ///
+        /// 面板采集时逐帧分配在 <see cref="allocInFrameBytes"/>（与面板 GC Alloc 列同源），
+        /// <see cref="managedAllocBytes"/> 是 GC.GetTotalMemory 差值那个弱口径，面板路径上恒为 0。
+        /// 实测踩过：报告与面板都直接印 managedAllocBytes，于是「最慢帧表」的分配列全是 **0** ——
+        /// 读者会把「133 ms 的卡顿尖峰」读成「那一帧没分配」。
+        /// </summary>
+        public long DisplayAllocBytes
+        {
+            get
+            {
+                if (allocInFrameBytes > 0) return allocInFrameBytes;
+                if (managedAllocBytes > 0) return managedAllocBytes;
+                return -1;
+            }
+        }
         public long tempAllocBytes;      // Profiler.GetTempAllocatorSize
         public int drawCalls;
         public int batches;
@@ -472,6 +490,40 @@ namespace PerfAgent.Core
         }
 
         // ---- 派生统计 ----
+
+        /// <summary>
+        /// 平均每帧分配（字节）+ 口径说明。拿不到时返回 NaN 并写明「不可用」——
+        /// **绝不返回 0**：0 B/帧 看起来像「零分配」这个好消息，会被当成实测值引用。
+        ///
+        /// 优先级：面板序列（与 Profiler 的 GC Alloc 列同源）→ ProfilerRecorder → GC.GetTotalMemory 差值。
+        /// 报告、面板、工具都该用这一处，否则同一个数字会在不同出口变样（实测踩过）。
+        /// </summary>
+        public double AverageAllocPerFrame(out string caliber)
+        {
+            double v = MetricValue("每帧托管分配");
+            if (!double.IsNaN(v))
+            {
+                caliber = "（面板序列，与 Profiler 的 GC Alloc 列同源）";
+                return v;
+            }
+
+            v = AvgRecorderAllocPerFrame();
+            if (!double.IsNaN(v))
+            {
+                caliber = "（ProfilerRecorder，含编辑器开销）";
+                return v;
+            }
+
+            v = AvgManagedAllocBytesPerFrame();
+            if (!double.IsNaN(v) && v > 0)
+            {
+                caliber = "（GC.GetTotalMemory 差值，弱口径：看不见当帧分配后即回收的部分）";
+                return v;
+            }
+
+            caliber = "（不可用：本次没采到分配数据）";
+            return double.NaN;
+        }
 
         public PerfMetric FindMetric(string name)
         {

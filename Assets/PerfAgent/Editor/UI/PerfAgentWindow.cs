@@ -1779,21 +1779,27 @@ namespace PerfAgent.UI
                 return;
             }
 
+            string allocCaliber;
+            double allocAvg = snap.AverageAllocPerFrame(out allocCaliber);
             _detailHost.Add(new Label(string.Format(CultureInfo.InvariantCulture,
-                "均值 {0:0.##} ms · P50 {1:0.##} · P95 {2:0.##} · 峰值 {3:0.##}\n平均每帧分配 {4:0} B · GC {5} 次",
+                "均值 {0:0.##} ms · P50 {1:0.##} · P95 {2:0.##} · 峰值 {3:0.##}\n平均每帧分配 {4}",
                 snap.FrameTimeAvgMs(), snap.FrameTimePercentileMs(50), snap.FrameTimePercentileMs(95), snap.FrameTimeMaxMs(),
-                snap.AvgManagedAllocBytesPerFrame(), snap.GcEventCount())));
+                double.IsNaN(allocAvg) ? "不可用" + allocCaliber : string.Format(CultureInfo.InvariantCulture, "{0:0} B {1}", allocAvg, allocCaliber))));
 
             _detailHost.Add(new Label(""));
-            _detailHost.Add(new Label("最慢的 20 帧："));
+            _detailHost.Add(new Label("最慢的 20 帧（`—` = 该帧这一项没采到）："));
             var frames = new List<FrameStat>(snap.frames);
             frames.Sort(delegate (FrameStat a, FrameStat b) { return b.deltaMs.CompareTo(a.deltaMs); });
             for (int i = 0; i < frames.Count && i < 20; i++)
             {
                 var f = frames[i];
+                long alloc = f.DisplayAllocBytes;
                 _detailHost.Add(new Label(string.Format(CultureInfo.InvariantCulture,
-                    "帧 {0,-8} {1,8:0.##} ms  分配 {2,10} B  DrawCall {3,5}  TempAlloc {4:0.0} MB",
-                    f.frame, f.deltaMs, f.managedAllocBytes, f.drawCalls, f.tempAllocBytes / 1048576.0)));
+                    "帧 {0,-8} {1,8:0.##} ms  分配 {2,10}  DrawCall {3,5}  TempAlloc {4}",
+                    f.frame, f.deltaMs,
+                    alloc > 0 ? alloc.ToString(CultureInfo.InvariantCulture) + " B" : "—",
+                    f.drawCalls > 0 ? f.drawCalls.ToString(CultureInfo.InvariantCulture) : "—",
+                    f.tempAllocBytes > 0 ? string.Format(CultureInfo.InvariantCulture, "{0:0.0} MB", f.tempAllocBytes / 1048576.0) : "—")));
             }
         }
 
