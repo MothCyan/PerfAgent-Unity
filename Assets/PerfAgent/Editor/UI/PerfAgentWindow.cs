@@ -355,9 +355,9 @@ namespace PerfAgent.UI
             RefreshDetails();
             RefreshLlmStatus();
             AppendTranscript("**性能诊断 Agent**\n\n点「跟随采集」后**工具会自动量一次基线并替你进入 Play**，"
-                + "你只管操作（战斗、开背包、切界面都算）；面板会**自动缩成一行小窗口**（帧率 + 帧耗时），不挡 Game 视图。\n"
+                + "你只管操作（战斗、开背包、切界面都算）；采集期间面板会**自动缩成一行小窗口**（帧率 + 帧耗时），不挡 Game 视图。\n"
                 + "玩 5~10 秒后**退出 Play**（或点小窗口上的「停止采集」）即自动结束、面板自动恢复原尺寸。\n"
-                + "想一边看波形一边操作，点小窗口上的「展开面板」（或菜单 `Tools/PerfAgent/面板：缩成小窗口 / 展开`）就行；\n"
+                + "想一边看波形一边操作，点小窗口上的「展开面板」就行；"
                 + "不想让工具替你按 Play，就在设置里关掉「点采集后自动进入 Play」。\n"
                 + "然后可以直接提问，例如：\n- 为什么会有周期性卡顿？\n- 内存的大头在哪里？\n- 每帧的分配是从哪来的？\n"
                 + "\n要贴给别人（或丢给外部 AI 继续追问），点工具栏「复制结论」。\n");
@@ -368,6 +368,51 @@ namespace PerfAgent.UI
             _compactBar = BuildCompactBar();
             _compactBar.style.display = DisplayStyle.None;
             root.Add(_compactBar);
+
+            RestoreIfLeftCompact();
+        }
+
+        /// <summary>
+        /// 启动时纠正「上次留下的小窗口」。
+        ///
+        /// 为什么要这一步（实测反馈：「性能诊断窗口怎么变那么小了，该回去」）：
+        /// **Unity 会把窗口布局持久化**，而小窗口只由「采集结束」这一个时机恢复 ——
+        /// 如果在采集（小窗口）期间退出 Unity / 触发域重载，那个小尺寸就被存进布局了，
+        /// 下次打开还是那么小。所以启动时看三件事：
+        ///   1. 采集还在跑 → 不动（小窗口本来就该是现在的样子）；
+        ///   2. 页面上没留「缩之前的尺寸」（说明不是我们缩的）→ 不动（用户自己拖小的，不插手）；
+        ///   3. 留过且当前尺寸不可用 → 恢复回去，并清掉存档。
+        /// </summary>
+        void RestoreIfLeftCompact()
+        {
+            try
+            {
+                if (FollowCapture.Capturing || _compact) return;
+
+                // 拿到「缩之前的尺寸」：先看字段（同一次会话），再看 SessionState（跨域重载）。
+                // 两边都没有 = 这个小尺寸不是我们缩的（用户自己拖的），不插手。
+                Rect saved = _preCompactRect;
+                if (saved.width <= 1f || saved.height <= 1f)
+                {
+                    if (!TryLoadPreCompactRect(out saved)) return;
+                }
+                _preCompactRect = saved;
+
+                if (CompactWindowGeometry.IsUsablePanelRect(position.width, position.height))
+                {
+                    try { SessionState.EraseString(PreCompactRectKey); } catch { }
+                    return;
+                }
+
+                var p = position;
+                position = new Rect(p.x, p.y,
+                    Mathf.Max(p.width, _preCompactRect.width),
+                    Mathf.Max(p.height, _preCompactRect.height));
+                try { SessionState.EraseString(PreCompactRectKey); } catch { }
+                UnityEngine.Debug.Log("[PerfAgent] 上次是在小窗口状态下退出/重载的（窗口布局是持久的），"
+                    + "已把面板恢复成 " + position.width.ToString("0") + "x" + position.height.ToString("0") + "。");
+            }
+            catch { }
         }
 
         /// <summary>刷新 LLM 状态条。读的是真实配置，所以状态不会与实际行为脱节。</summary>
