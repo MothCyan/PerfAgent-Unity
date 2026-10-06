@@ -23,6 +23,18 @@ namespace PerfAgent.Agent
 
         public static bool Busy { get; private set; }
 
+        // ---- 最近一次响应的诊断信息（出错时展示，平时不用）----
+        // 为什么放在这里：模型返回空正文的原因很多（被 max_tokens 截断、只回了工具调用、
+        // 只回了推理内容），只说一句「没有返回文本」等于没说。
+        /// <summary>最近一次响应的 finish_reason（stop / length / tool_calls …）。</summary>
+        public static string LastFinishReason = "";
+        /// <summary>最近一次响应拿到的正文字符数。</summary>
+        public static int LastContentLength;
+        /// <summary>最近一次响应拿到的推理内容（reasoning_content）字符数。</summary>
+        public static int LastReasoningLength;
+        /// <summary>最近一次响应里是否带工具调用。</summary>
+        public static bool LastHadToolCalls;
+
         public static void Send(List<object> messages,
             Action<string> onDelta,
             Action<Dictionary<string, object>> onMessage,
@@ -486,6 +498,8 @@ namespace PerfAgent.Agent
         {
             readonly StringBuilder _raw = new StringBuilder();
             readonly StringBuilder _content = new StringBuilder();
+            /// <summary>推理类模型（deepseek-reasoner 等）的思维链：正文之前的 reasoning_content。</summary>
+            readonly StringBuilder _reasoning = new StringBuilder();
             readonly StringBuilder _buffer = new StringBuilder();
             readonly Dictionary<int, ToolAccumulator> _tools = new Dictionary<int, ToolAccumulator>();
             readonly Action<string> _onDelta;
@@ -561,6 +575,13 @@ namespace PerfAgent.Agent
                             _content.Append(piece);
                             if (_onDelta != null) _onDelta(piece);
                         }
+
+                        // 只收不进：推理内容不往对话里流（它是过程不是结论）。
+                        // 但它必须被接住 —— 不接的话，这类模型会全部表现为「没有返回任何文本」。
+                        string think = MiniJson.Str(carrier, "reasoning_content");
+                        if (string.IsNullOrEmpty(think)) think = MiniJson.Str(carrier, "reasoning");
+                        if (!string.IsNullOrEmpty(think)) _reasoning.Append(think);
+
                         AccumulateToolCalls(MiniJson.AsList(MiniJson.Get(carrier, "tool_calls")));
                     }
 
@@ -615,6 +636,21 @@ namespace PerfAgent.Agent
                     var errorObj = err == null ? null : MiniJson.AsDict(MiniJson.Get(err, "error"));
                     if (errorObj != null)
                         return null;
+                }
+
+                // 诊断信息挂在静态字段上，而不是塞进 message：
+                // message 会被原样回送给服务商，多塞字段有可能被严格校验的网关拒掉。
+                LastFinishReason = _finishReason;
+                LastContentLength = _content.Length;
+                LastReasoningLength = _reasoning.Length;
+                LastHadToolCalls = _tools.Count > 0;
+
+                // 正文为空但拿到了思维链：不要当成失败丢掉（这类模型偶发这样），
+                // 但要如实标注它是推理内容，而不是正式结论。
+                if (_content.Length == 0 && _reasoning.Length > 0)
+                {
+                    _content.Append("（模型只返回了推理内容，没有正文 —— 以下为它的思维过程，请自行判断）\n\n")
+                            .Append(_reasoning);
                 }
 
                 var message = new Dictionary<string, object>();

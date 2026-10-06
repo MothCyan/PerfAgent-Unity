@@ -412,7 +412,12 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 - 对话卡与明细区一起 `flexGrow = 1`，记录区不再固定 150 px（长回答根本没法读）；
 - 示例问题是**单行横向滚动**（收起滚动条），不再换行吃掉三行高度；
 - 「复制对话 / 新会话」长在卡片标题行里（`Theme.CardTitleRow`），不多占一行；
-- 发送按钮 `minWidth + flexShrink=0`，行内 `flexWrap` —— 宁可换行也不允许把按钮挤出可视区。
+- 发送按钮 `minWidth + flexShrink=0`，行内 `flexWrap` —— 宁可换行也不允许把按钮挤出可视区；
+- **对话区不用 Markdown 结构与表格**。记录区是一个 Label，`Theme.RichText` 只认 `**粗体**` 与 `` `代码` `` ——
+  `###` 会原样显示成「### 结论」、Markdown 表格会显示成一堆竖线（用户反馈「不好读」就是这个）。
+  所以 `LocalAnswer.Answer(s, q, chatStyle: true)` 输出粗体小标题 + 列表版；
+  需要 Markdown（报告 / 复制走的那份）时用默认的 `chatStyle: false`。
+  模型原文（如 AI 修复清单）也不再倒进对话框，而是直接进剪贴板，只在对话里留一行「已复制 N 字」。
 
 ### 11.8 两个 UI Toolkit 坑（都把人坑过，写了注释）
 

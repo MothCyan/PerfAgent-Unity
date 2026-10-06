@@ -221,7 +221,7 @@ namespace PerfAgent.Agent
 
             if (string.IsNullOrEmpty(content))
             {
-                onError("模型没有返回文本结论。");
+                onError(DescribeEmptyAnswer());
                 return;
             }
 
@@ -229,6 +229,43 @@ namespace PerfAgent.Agent
             LastAnswer = content;
             Status("完成");
             onDone(content);
+        }
+
+        /// <summary>
+        /// 模型没给正文时，别只说一句「没有返回文本结论」—— 那对排查毫无帮助。
+        /// 把 finish_reason、有没有工具调用、是不是只有推理内容这些事实摆出来，并给出下一步。
+        /// （这些读数来自 LlmClient 的最近一次响应诊断字段。）
+        /// </summary>
+        static string DescribeEmptyAnswer()
+        {
+            var cfg = PerfAgentSettings.Config;
+            var sb = new StringBuilder("模型没有返回正文");
+            if (!string.IsNullOrEmpty(LlmClient.LastFinishReason))
+                sb.Append("（finish_reason=").Append(LlmClient.LastFinishReason).Append("）");
+            sb.Append("。");
+
+            if (LlmClient.LastReasoningLength > 0)
+            {
+                sb.Append("\n它只回了推理内容（reasoning_content）、没有正文：这类模型（如 deepseek-reasoner）")
+                  .Append("的正文有时会被截断 —— 把「最大输出 tokens」调大（当前 ")
+                  .Append(cfg.maxOutputTokens).Append("），或换成非推理模型再试。");
+            }
+            else if (LlmClient.LastFinishReason == "length")
+            {
+                sb.Append("\n输出被 max_tokens 截断了：在「LLM 配置」里把最大输出 tokens 调大（当前 ")
+                  .Append(cfg.maxOutputTokens).Append("）。");
+            }
+            else if (LlmClient.LastHadToolCalls || LlmClient.LastFinishReason == "tool_calls")
+            {
+                sb.Append("\n它只发了工具调用、没给结论：可能是工具调用轮数不够（当前 ")
+                  .Append(cfg.maxSteps).Append(" 轮），也可能是这个模型不擅长按工具结果收尾 —— 换个模型再试一次。");
+            }
+            else
+            {
+                sb.Append("\n可以：①重发一次（偶发空响应）；②确认模型名对不对（当前「")
+                  .Append(cfg.model).Append("」）；③看 Console 有没有更详细的报错。");
+            }
+            return sb.ToString();
         }
 
         /// <summary>幻觉校验：把无法回溯的数字显式标注出来，而不是假装它是对的。</summary>

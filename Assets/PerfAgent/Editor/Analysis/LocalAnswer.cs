@@ -151,8 +151,22 @@ namespace PerfAgent.Analysis
             }
         }
 
-        /// <summary>本地回答（Markdown）。不联网、不调用任何模型。</summary>
+        /// <summary>本地回答（Markdown，给报告/复制用）。不联网、不调用任何模型。</summary>
         public static string Answer(PerfSnapshot s, string question)
+        {
+            return Answer(s, question, false);
+        }
+
+        /// <summary>
+        /// 本地回答。
+        ///
+        /// <param name="chatStyle">
+        /// true = 「聊天版」：小标题用 `**粗体**`、数字用列表 —— 对话记录是一个 Label，
+        /// 只认 `**粗体**` 与 `` `代码` ``：`###` 会原样显示成「### 结论」，
+        /// Markdown 表格会显示成一堆竖线（实测就是这个问题，很难读）。
+        /// </param>
+        /// </summary>
+        public static string Answer(PerfSnapshot s, string question, bool chatStyle)
         {
             if (s == null)
                 return "当前没有快照：先点「跟随采集」（自己进 Play 操作），或从左上列表载入一份历史快照。\n";
@@ -161,7 +175,8 @@ namespace PerfAgent.Analysis
             Match(question, hits);
 
             var sb = new StringBuilder();
-            sb.Append("**本地规则引擎** · ");
+            // 聊天版不重复写名字：面板已经在上面写过一行「**本地规则引擎**（…）」，再写就重了
+            if (!chatStyle) sb.Append("**本地规则引擎** · ");
             if (hits.Count == 0)
             {
                 // 没命中时说清「为什么列了全部」，并给出能提高命中率的词 ——
@@ -205,13 +220,13 @@ namespace PerfAgent.Analysis
                 sb.Append(hits.Count > 0 ? "；下面先把它找到的事实摆出来。\n\n" : "，而这个问题也没命中关键词。\n\n");
             }
 
-            bool any = AppendFindings(sb, s, hits);
-            AppendMetrics(sb, s, hits, any);
+            bool any = AppendFindings(sb, s, hits, chatStyle);
+            AppendMetrics(sb, s, hits, any, chatStyle);
             return sb.ToString();
         }
 
         /// <summary>列出该维度的结论（带证据链）。返回是否给出了结论。</summary>
-        static bool AppendFindings(StringBuilder sb, PerfSnapshot s, List<Dimension> hits)
+        static bool AppendFindings(StringBuilder sb, PerfSnapshot s, List<Dimension> hits, bool chatStyle)
         {
             var list = new List<PerfFinding>();
             for (int i = 0; i < s.findings.Count; i++)
@@ -231,7 +246,7 @@ namespace PerfAgent.Analysis
             var majors = list.FindAll(delegate (PerfFinding f) { return f.severity != Severity.Info; });
             var show = majors.Count > 0 ? majors : list;
 
-            sb.Append("### 结论\n\n");
+            sb.Append(chatStyle ? "**结论**\n\n" : "### 结论\n\n");
             if (show.Count == 0)
             {
                 sb.Append(hits.Count > 0
@@ -265,7 +280,7 @@ namespace PerfAgent.Analysis
         }
 
         /// <summary>该维度相关的数字。命中维度时按维度列，没命中时列核心指标。</summary>
-        static void AppendMetrics(StringBuilder sb, PerfSnapshot s, List<Dimension> hits, bool hasFindings)
+        static void AppendMetrics(StringBuilder sb, PerfSnapshot s, List<Dimension> hits, bool hasFindings, bool chatStyle)
         {
             var names = new List<string>();
             if (hits.Count == 0)
@@ -288,6 +303,17 @@ namespace PerfAgent.Analysis
             {
                 var m = s.FindMetric(names[i]);
                 if (m == null) continue;
+
+                if (chatStyle)
+                {
+                    // 聊天版：一行一个，不做表格
+                    rows.Append("- ").Append(m.name).Append(" = ")
+                        .Append(m.value.ToString("0.##", CultureInfo.InvariantCulture)).Append(' ').Append(m.unit)
+                        .Append(string.IsNullOrEmpty(m.budget) ? "" : "（预算 " + m.budget + " " + m.budgetUnit + "）")
+                        .Append('\n');
+                    continue;
+                }
+
                 rows.Append("| ").Append(m.name).Append(" | ")
                     .Append(m.value.ToString("0.##", CultureInfo.InvariantCulture)).Append(' ').Append(m.unit)
                     .Append(" | ").Append(string.IsNullOrEmpty(m.budget) ? "-" : m.budget + " " + m.budgetUnit)
@@ -295,8 +321,10 @@ namespace PerfAgent.Analysis
             }
             if (rows.Length == 0) return;
 
-            sb.Append(hasFindings ? "### 相关数字\n\n" : "### 数字\n\n");
-            sb.Append("| 指标 | 值 | 预算 |\n|---|---:|---:|\n");
+            sb.Append(chatStyle
+                ? (hasFindings ? "**相关数字**\n\n" : "**数字**\n\n")
+                : (hasFindings ? "### 相关数字\n\n" : "### 数字\n\n"));
+            if (!chatStyle) sb.Append("| 指标 | 值 | 预算 |\n|---|---:|---:|\n");
             sb.Append(rows);
             sb.Append('\n');
         }

@@ -24,6 +24,30 @@ namespace PerfAgent.RuleRegression
             tests.Add(LocalAnswerWarnsWhenWindowTooSmall);
             tests.Add(LocalAnswerFlagsExplanationQuestionsUpFront);
             tests.Add(LocalAnswerBriefIsGroundedAndCompact);
+            tests.Add(LocalAnswerChatStyleAvoidsRawMarkdown);
+        }
+
+        /// <summary>
+        /// 对话记录是一个 Label，只认 `**粗体**` 与 `代码`：`###` 会原样显示成「### 结论」，
+        /// Markdown 表格会显示成一堆竖线 —— 那正是「不好读」的根源。
+        /// 所以聊天版必须是粗体小标题 + 列表，而报告版保留 Markdown 结构。
+        /// </summary>
+        static void LocalAnswerChatStyleAvoidsRawMarkdown()
+        {
+            var s = SnapshotWithFindings();
+
+            string chat = LocalAnswer.Answer(s, "每帧的分配是从哪来的？", true);
+            True(chat.IndexOf("###", StringComparison.Ordinal) < 0, "chat style must not emit raw headings: " + chat);
+            True(chat.IndexOf("|---", StringComparison.Ordinal) < 0, "chat style must not emit markdown tables");
+            True(chat.IndexOf("**结论**", StringComparison.Ordinal) >= 0, "chat style must use bold labels");
+            True(chat.IndexOf("- 每帧托管分配 =", StringComparison.Ordinal) >= 0,
+                "chat style must print numbers as list items");
+            True(chat.IndexOf("项目每帧分配 = 13970", StringComparison.Ordinal) >= 0,
+                "chat style must still carry the attributable number");
+
+            string report = LocalAnswer.Answer(s, "每帧的分配是从哪来的？");
+            True(report.IndexOf("### 结论", StringComparison.Ordinal) >= 0, "report style keeps markdown headings");
+            True(report.IndexOf("|---", StringComparison.Ordinal) >= 0, "report style keeps the markdown table");
         }
 
         static PerfSnapshot SnapshotWithFindings()

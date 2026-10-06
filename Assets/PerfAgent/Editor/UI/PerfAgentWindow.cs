@@ -293,7 +293,9 @@ namespace PerfAgent.UI
             columns.Add(right);
 
             _detailHost = new ScrollView(ScrollViewMode.Vertical);
-            _detailHost.style.flexGrow = 1;
+            // 明细区比对话区“让一点”：阅读结论是一阵子的事，而对话是要边看边问的。
+            // 2:3 的分法（flexGrow）比 1:1 好用 —— 实测空明细区占掉半屏、对话却被挤成一条。
+            _detailHost.style.flexGrow = 2;
             _detailHost.style.minHeight = 140;
             _detailHost.style.backgroundColor = Theme.SunkenBg;
             Theme.Rounded(_detailHost, Theme.Radius);
@@ -675,8 +677,8 @@ namespace PerfAgent.UI
             card.style.marginTop = 6;
             // 与明细区一起瓜分右栏高度：窗口高的时候记录区跟着变高，
             // 而不是永远卡在一个 150 px 的小窗里（那样长回答根本没法读）。
-            card.style.flexGrow = 1;
-            card.style.minHeight = 160;
+            card.style.flexGrow = 3;
+            card.style.minHeight = 200;
 
             // 标题行右侧放按钮：长在标题里就不占额外的高度
             var titleRow = Theme.CardTitleRow(card);
@@ -720,6 +722,9 @@ namespace PerfAgent.UI
             _transcript.style.whiteSpace = WhiteSpace.Normal;
             _transcript.style.fontSize = Theme.SizeBody;
             _transcript.style.color = Theme.Text;
+            // 段落之间本来就靠空行分隔（AppendTranscript 里写的），
+            // 再加一点下边距，扫读时不会觉得整块文字挤在一起
+            _transcript.style.marginBottom = 8;
             _transcriptScroll.Add(_transcript);
 
             // 示例问题：单行横向滚动。
@@ -905,7 +910,10 @@ namespace PerfAgent.UI
                     if (_sendButton != null) SetSending(false);
                     if (string.IsNullOrEmpty(text)) { SetStatus("AI 没返回内容（看看 Console 或 LLM 配置）。"); return; }
                     EditorGUIUtility.systemCopyBuffer = text;
-                    AppendTranscript("\n**AI 修复清单**（已复制到剪贴板）\n\n" + text + "\n");
+                    // 不再把模型原文倒进对话区：它带 `#` 标题与 ``` 代码块，
+                    // 而对话记录是一个 Label（只认 `**粗体**`），直接贴过来就是一堵原始 Markdown。
+                    AppendTranscript("\n**AI 修复清单**：已复制到剪贴板（" + text.Length
+                                   + " 字）—— 直接粘到编辑器/issue 里逐条改；要看全文就 Ctrl+V。\n");
                     SetStatus("已复制 AI 修复清单（" + text.Length + " 字符）。先看一遍再改 —— 这是建议，不是审计结果。");
                     SaveConversation();
                 },
@@ -939,7 +947,7 @@ namespace PerfAgent.UI
             // 开了 AI 时用户就能当场看到两条路的差别（本地给事实，AI 在此基础上给因果与取舍），
             // 而不是靠文档解释「AI 有什么用」。
             AppendTranscript("**本地规则引擎**（规则算出来的结论与数字，可逐条回溯）\n\n"
-                           + LocalAnswer.Answer(snap, text));
+                           + LocalAnswer.Answer(snap, text, true));
 
             if (cfg.localOnlyNoLlm || !cfg.HasApiKey)
             {
@@ -1226,6 +1234,9 @@ namespace PerfAgent.UI
             _detailHost.Clear();
 
             var snap = PerfSession.Current;
+            // 没快照时明细区只剩一句空状态，没必要占半屏 —— 把高度还给对话区。
+            // （有快照时它才参与 flexGrow 分配，2:3）
+            _detailHost.style.flexGrow = snap == null ? 0 : 2;
             if (snap == null)
             {
                 _detailHost.Add(Theme.EmptyState("◎", "还没有数据",
