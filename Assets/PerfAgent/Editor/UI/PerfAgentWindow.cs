@@ -42,6 +42,9 @@ namespace PerfAgent.UI
         readonly CaptureLiveStats _live = new CaptureLiveStats();
         bool _liveActive;
 
+        /// <summary>会话的原始 Markdown；显示时统一转成富文本（否则 `**粗体**` 会原样显示星号）。</summary>
+        readonly StringBuilder _transcriptRaw = new StringBuilder();
+
         VisualElement _tabRow;
         /// <summary>LLM 配置状态条：让用户不用去 Project Settings 就能看到当前状态并就地配置。</summary>
         Label _llmStatus;
@@ -177,52 +180,65 @@ namespace PerfAgent.UI
         {
             var root = rootVisualElement;
             root.style.flexDirection = FlexDirection.Column;
-            root.style.paddingLeft = 8;
-            root.style.paddingRight = 8;
-            root.style.paddingTop = 6;
-            root.style.paddingBottom = 6;
+            root.style.backgroundColor = Theme.WindowBg;
+            Theme.Pad(root, 10, 10, 8, 8);
+
+            // ---- 顶部：标题 + LLM 状态 + 工具条 ----
+            var header = Theme.Header("性能诊断", "跟随采集 → 实时波形 → 结论与修复计划；改工程前一律要你点确认");
+            _llmStatus = Theme.Pill("LLM：检查中…", Theme.TextDim);
+            header.Add(_llmStatus);
+            header.Add(Theme.Ghost("LLM 配置", PerfAgentSettingsWindow.Open));
+            root.Add(header);
 
             root.Add(BuildToolbar());
+            root.Add(Theme.Divider());
 
+            // ---- 状态行 ----
             _status = new Label("就绪");
-            _status.style.marginTop = 4;
+            _status.style.fontSize = Theme.SizeSmall;
+            _status.style.marginTop = 2;
             _status.style.marginBottom = 2;
-            _status.style.color = new Color(0.75f, 0.78f, 0.82f);
+            _status.style.color = Theme.TextDim;
+            _status.style.whiteSpace = WhiteSpace.Normal;
             root.Add(_status);
 
             _liveHost = BuildLiveStrip();
             _liveHost.style.display = DisplayStyle.None;   // 有样本了才显示
             root.Add(_liveHost);
 
+            // ---- 两栏 ----
             var columns = new VisualElement();
             columns.style.flexDirection = FlexDirection.Row;
             columns.style.flexGrow = 1;
             columns.style.marginTop = 6;
             root.Add(columns);
 
-            // ---- 左栏 ----
+            // 左栏：标签 / 快照 / 预算
             var left = new VisualElement();
             left.style.width = 300;
-            left.style.marginRight = 8;
+            left.style.marginRight = 10;
             left.style.flexDirection = FlexDirection.Column;
             columns.Add(left);
 
-            left.Add(SectionTitle("分析标签"));
+            var tabsCard = Theme.Card("分析标签", "按维度看明细");
             _tabRow = new VisualElement();
             _tabRow.style.flexDirection = FlexDirection.Row;
             _tabRow.style.flexWrap = Wrap.Wrap;
-            left.Add(_tabRow);
+            tabsCard.Add(_tabRow);
             BuildTabs();
+            left.Add(tabsCard);
 
-            left.Add(SectionTitle("快照"));
+            var snapCard = Theme.Card("快照", "历史分析结果");
             _snapshotHost = new ScrollView(ScrollViewMode.Vertical);
             _snapshotHost.style.maxHeight = 180;
-            left.Add(_snapshotHost);
+            snapCard.Add(_snapshotHost);
+            left.Add(snapCard);
 
-            left.Add(SectionTitle("性能预算"));
-            left.Add(BuildBudgetEditor());
+            var budgetCard = Theme.Card("性能预算", "改完即时重算");
+            budgetCard.Add(BuildBudgetEditor());
+            left.Add(budgetCard);
 
-            // ---- 右栏 ----
+            // 右栏：明细 + 会话
             var right = new VisualElement();
             right.style.flexGrow = 1;
             right.style.flexDirection = FlexDirection.Column;
@@ -230,10 +246,10 @@ namespace PerfAgent.UI
 
             _detailHost = new ScrollView(ScrollViewMode.Vertical);
             _detailHost.style.flexGrow = 1;
-            _detailHost.style.backgroundColor = new Color(0.14f, 0.15f, 0.17f);
-            _detailHost.style.paddingLeft = 8;
-            _detailHost.style.paddingRight = 8;
-            _detailHost.style.paddingTop = 6;
+            _detailHost.style.backgroundColor = Theme.SunkenBg;
+            Theme.Rounded(_detailHost, Theme.Radius);
+            Theme.Border1(_detailHost, Theme.Border);
+            Theme.Pad(_detailHost, 10, 10, 8, 8);
             right.Add(_detailHost);
 
             right.Add(BuildChatPanel());
@@ -256,20 +272,20 @@ namespace PerfAgent.UI
             var cfg = PerfAgentSettings.Config;
             if (cfg.localOnlyNoLlm)
             {
-                _llmStatus.text = "LLM：纯本地模式（只用规则引擎，不外传任何数据）";
-                _llmStatus.style.color = new Color(0.62f, 0.66f, 0.72f);
+                _llmStatus.text = "LLM：纯本地模式（不外传任何数据）";
+                Theme.TintPill(_llmStatus, Theme.TextDim);
             }
             else if (!cfg.HasApiKey && !LlmClient.IsLocalEndpoint(cfg.endpoint))
             {
-                _llmStatus.text = "LLM：未配置 API Key（仍可用，回答会退化为本地规则引擎结论）";
-                _llmStatus.style.color = new Color(1f, 0.83f, 0.48f);
+                _llmStatus.text = "LLM：未配置 Key（会用本地规则引擎回答）";
+                Theme.TintPill(_llmStatus, Theme.Warn);
             }
             else
             {
                 string source = cfg.ApiKeySource;
                 _llmStatus.text = "LLM：" + cfg.model
                     + (string.IsNullOrEmpty(source) ? "" : "（Key 来源：" + source + "）");
-                _llmStatus.style.color = new Color(0.55f, 0.87f, 0.62f);
+                Theme.TintPill(_llmStatus, Theme.Good);
             }
         }
 
@@ -356,16 +372,16 @@ namespace PerfAgent.UI
         VisualElement BuildLiveStrip()
         {
             var host = new VisualElement();
-            host.style.marginTop = 4;
-            host.style.paddingLeft = 6;
-            host.style.paddingRight = 6;
-            host.style.paddingTop = 4;
-            host.style.paddingBottom = 4;
-            host.style.backgroundColor = new Color(0.11f, 0.12f, 0.14f);
+            host.style.marginTop = 6;
+            Theme.Pad(host, 8, 8, 6, 6);
+            host.style.backgroundColor = Theme.CardBg;
+            Theme.Rounded(host, Theme.Radius);
+            Theme.Border1(host, Theme.Border);
 
             _liveLabel = new Label("");
             _liveLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
-            _liveLabel.style.color = new Color(0.85f, 0.88f, 0.95f);
+            _liveLabel.style.fontSize = Theme.SizeSmall;
+            _liveLabel.style.color = Theme.Text;
             _liveLabel.style.whiteSpace = WhiteSpace.Normal;
             host.Add(_liveLabel);
 
@@ -429,32 +445,36 @@ namespace PerfAgent.UI
         /// <summary>单帧耗时 → 颜色：≥33 ms（<30 FPS）红，≥16.7 ms（<60 FPS）黄，其余绿。</summary>
         static Color BarColor(double ms)
         {
-            if (ms >= 33.0) return new Color(0.90f, 0.35f, 0.32f);
-            if (ms >= 16.7) return new Color(0.92f, 0.78f, 0.30f);
-            return new Color(0.35f, 0.75f, 0.45f);
+            if (ms >= 33.0) return Theme.Bad;
+            if (ms >= 16.7) return Theme.Warn;
+            return Theme.Good;
         }
 
 
         VisualElement BuildToolbar()
         {
-            var bar = new VisualElement();            bar.style.flexDirection = FlexDirection.Row;
+            var bar = new VisualElement();
+            bar.style.flexDirection = FlexDirection.Row;
             bar.style.flexWrap = Wrap.Wrap;
             bar.style.alignItems = Align.Center;
 
-            bar.Add(ToolbarButton("跟随采集", ToggleFollowCapture));
-            bar.Add(ToolbarButton("复制结论", CopyReport));
-            bar.Add(ToolbarButton("静态审计", RunStaticAudit));
-            bar.Add(ToolbarButton("重新分析", delegate
+            // 主操作单独一组：整屏只有一个强调色按钮
+            bar.Add(Theme.Primary("跟随采集", ToggleFollowCapture));
+            bar.Add(Theme.Secondary("复制结论", CopyReport));
+            bar.Add(Theme.Divider(true));
+            bar.Add(Theme.Secondary("静态审计", RunStaticAudit));
+            bar.Add(Theme.Secondary("重新分析", delegate
             {
                 if (PerfSession.Current == null) { SetStatus("没有快照"); return; }
                 PerfPipeline.Analyze(PerfSession.Current);
                 PerfPipeline.SaveAndSetCurrent(PerfSession.Current);
                 SetStatus("已重新分析");
             }));
-            bar.Add(ToolbarButton("导出 MD", delegate { Export(false); }));
-            bar.Add(ToolbarButton("导出 HTML", delegate { Export(true); }));
-            bar.Add(ToolbarButton("LLM 配置", PerfAgentSettingsWindow.Open));
-            bar.Add(ToolbarButton("新会话", NewConversation));
+            bar.Add(Theme.Divider(true));
+            bar.Add(Theme.Secondary("导出 MD", delegate { Export(false); }));
+            bar.Add(Theme.Secondary("导出 HTML", delegate { Export(true); }));
+            bar.Add(Theme.Divider(true));
+            bar.Add(Theme.Ghost("新会话", NewConversation));
             return bar;
         }
 
@@ -475,22 +495,11 @@ namespace PerfAgent.UI
 
         void AddTab(string id, string label)
         {
-            var button = new Button(delegate
+            _tabRow.Add(Theme.Tab(label, _activeTab == id, delegate
             {
                 _activeTab = id;
                 RefreshDetails();
-            });
-            button.text = label;
-            button.style.marginRight = 4;
-            button.style.marginBottom = 4;
-            button.style.paddingLeft = 8;
-            button.style.paddingRight = 8;
-            if (_activeTab == id)
-            {
-                button.style.backgroundColor = new Color(0.24f, 0.42f, 0.68f);
-                button.style.color = Color.white;
-            }
-            _tabRow.Add(button);
+            }));
         }
 
         VisualElement BuildBudgetEditor()
@@ -505,6 +514,7 @@ namespace PerfAgent.UI
             box.Add(BudgetField("每帧分配 (B)", b.maxManagedAllocBytesPerFrame, delegate (double v) { b.maxManagedAllocBytesPerFrame = (long)v; Apply(); }));
             box.Add(BudgetField("纹理内存 (MB)", b.maxTextureMemoryMB, delegate (double v) { b.maxTextureMemoryMB = (long)v; Apply(); }));
             box.Add(BudgetField("TempAlloc (MB)", b.maxTempAllocatorMB, delegate (double v) { b.maxTempAllocatorMB = (long)v; Apply(); }));
+            box.Add(Theme.Hint("这些阈值是诊断的判定标准；改动会立刻重算当前快照。"));
             return box;
         }
 
@@ -515,8 +525,9 @@ namespace PerfAgent.UI
             row.style.alignItems = Align.Center;
 
             var lbl = new Label(label);
-            lbl.style.width = 110;
-            lbl.style.fontSize = 11;
+            lbl.style.width = 108;
+            lbl.style.fontSize = Theme.SizeSmall;
+            lbl.style.color = Theme.TextDim;
             row.Add(lbl);
 
             var field = new DoubleField();
@@ -545,49 +556,33 @@ namespace PerfAgent.UI
 
         VisualElement BuildChatPanel()
         {
-            var panel = new VisualElement();
-            panel.style.marginTop = 6;
-
-            // ---- LLM 状态条：未配置时给出就地入口，而不是等用户发完消息才报错 ----
-            var llmBar = new VisualElement();
-            llmBar.style.flexDirection = FlexDirection.Row;
-            llmBar.style.alignItems = Align.Center;
-            llmBar.style.marginBottom = 3;
-
-            _llmStatus = new Label();
-            _llmStatus.style.flexGrow = 1;
-            _llmStatus.style.flexShrink = 1;
-            _llmStatus.style.fontSize = 11;
-            _llmStatus.style.whiteSpace = WhiteSpace.Normal;
-            llmBar.Add(_llmStatus);
-
-            var configure = new Button(delegate { PerfAgentSettingsWindow.Open(); });
-            configure.text = "LLM 配置";
-            configure.style.width = 92;
-            llmBar.Add(configure);
-            panel.Add(llmBar);
+            var card = Theme.Card("对话追问", "看不懂结论就在这里问；没配 Key 也能用（走本地规则引擎）");
+            card.style.marginTop = 6;
 
             _transcriptScroll = new ScrollView(ScrollViewMode.Vertical);
             _transcriptScroll.style.height = 150;
-            _transcriptScroll.style.backgroundColor = new Color(0.12f, 0.13f, 0.15f);
-            _transcriptScroll.style.paddingLeft = 8;
-            _transcriptScroll.style.paddingRight = 8;
-            _transcriptScroll.style.paddingTop = 6;
-            panel.Add(_transcriptScroll);
+            _transcriptScroll.style.backgroundColor = Theme.SunkenBg;
+            Theme.Rounded(_transcriptScroll, 4f);
+            Theme.Border1(_transcriptScroll, Theme.Border);
+            Theme.Pad(_transcriptScroll, 8, 8, 6, 6);
+            card.Add(_transcriptScroll);
 
             _transcript = new Label();
             _transcript.style.whiteSpace = WhiteSpace.Normal;
+            _transcript.style.fontSize = Theme.SizeBody;
+            _transcript.style.color = Theme.Text;
             _transcriptScroll.Add(_transcript);
 
             var row = new VisualElement();
             row.style.flexDirection = FlexDirection.Row;
-            row.style.marginTop = 4;
-            panel.Add(row);
+            row.style.marginTop = 6;
+            card.Add(row);
 
             _input = new TextField();
             _input.multiline = true;
             _input.style.flexGrow = 1;
-            _input.style.height = 56;
+            _input.style.height = 52;
+            _input.style.fontSize = Theme.SizeBody;
             _input.RegisterCallback<KeyDownEvent>(delegate (KeyDownEvent evt)
             {
                 if ((evt.ctrlKey || evt.commandKey) && (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter))
@@ -598,33 +593,27 @@ namespace PerfAgent.UI
             });
             row.Add(_input);
 
-            _sendButton = new Button(Send);
-            _sendButton.text = "发送\n(Ctrl+Enter)";
-            _sendButton.style.width = 92;
-            _sendButton.style.height = 56;
-            _sendButton.style.marginLeft = 4;
+            _sendButton = Theme.Primary("发送\n(Ctrl+Enter)", Send);
+            _sendButton.style.width = 96;
+            _sendButton.style.height = 52;
+            _sendButton.style.marginLeft = 6;
+            _sendButton.style.marginRight = 0;
+            _sendButton.style.marginBottom = 0;
+            _sendButton.style.fontSize = Theme.SizeSmall;
             row.Add(_sendButton);
 
-            return panel;
+            return card;
         }
 
         static Label SectionTitle(string text)
         {
             var label = new Label(text);
             label.style.unityFontStyleAndWeight = FontStyle.Bold;
+            label.style.fontSize = Theme.SizeSmall;
             label.style.marginTop = 8;
             label.style.marginBottom = 2;
-            label.style.color = new Color(0.62f, 0.72f, 0.9f);
+            label.style.color = Theme.TextDim;
             return label;
-        }
-
-        static Button ToolbarButton(string text, Action onClick)
-        {
-            var b = new Button(onClick);
-            b.text = text;
-            b.style.marginLeft = 4;
-            b.style.marginRight = 2;
-            return b;
         }
 
         // =====================================================================
@@ -815,7 +804,11 @@ namespace PerfAgent.UI
         void AppendTranscript(string markdown)
         {
             if (_transcript == null) return;
-            _transcript.text = (_transcript.text ?? "") + markdown;
+
+            // 保留原始 Markdown，渲染时再转富文本：
+            // 直接对累加结果做转换，`**` 跨两次追加（流式回答）时才不会碎掉。
+            _transcriptRaw.Append(markdown);
+            _transcript.text = Theme.RichText(_transcriptRaw.ToString());
             _transcriptScroll.scrollOffset = new Vector2(0, float.MaxValue);
         }
 
@@ -833,11 +826,15 @@ namespace PerfAgent.UI
             head.style.flexDirection = FlexDirection.Row;
             head.style.alignItems = Align.Center;
 
-            var count = new Label("快照 " + paths.Count + " 个");
-            count.style.flexGrow = 1;
+            var count = Theme.Pill("共 " + paths.Count + " 个", Theme.TextDim);
+            count.style.flexGrow = 0;
             head.Add(count);
 
-            var clear = new Button(delegate
+            var spacer = new VisualElement();
+            spacer.style.flexGrow = 1;
+            head.Add(spacer);
+
+            var clear = Theme.Ghost("清空全部", delegate
             {
                 if (paths.Count == 0) { SetStatus("没有可删除的快照。"); return; }
                 if (!EditorUtility.DisplayDialog("PerfAgent",
@@ -849,14 +846,12 @@ namespace PerfAgent.UI
                 RefreshDetails();
                 SetStatus("已删除 " + n + " 个快照。");
             });
-            clear.text = "清空全部";
-            clear.style.width = 70;
             head.Add(clear);
             _snapshotHost.Add(head);
 
             if (paths.Count == 0)
             {
-                _snapshotHost.Add(new Label("（暂无快照）"));
+                _snapshotHost.Add(Theme.Hint("暂无快照：点上面「跟随采集」跑一段就有了。"));
                 return;
             }
 
@@ -878,9 +873,15 @@ namespace PerfAgent.UI
                     PerfSession.SetCurrent(snap, path);
                     SetStatus("已加载 " + id);
                 });
-                button.text = (isCurrent ? "▶ " : "   ") + id;
+                button.text = (isCurrent ? "▶ " : "　") + id;
                 button.style.flexGrow = 1;
+                button.style.flexShrink = 1;
                 button.style.unityTextAlign = TextAnchor.MiddleLeft;
+                button.style.fontSize = Theme.SizeSmall;
+                button.style.marginRight = 2;
+                button.style.marginBottom = 2;
+                button.style.paddingLeft = 6;
+                Theme.Rounded(button, 4f);
                 if (isCurrent) button.style.color = new Color(0.6f, 0.85f, 1f);
                 row.Add(button);
 
@@ -896,7 +897,11 @@ namespace PerfAgent.UI
                     SetStatus("已删除 " + id);
                 });
                 del.text = "✕";
-                del.style.width = 24;
+                del.style.width = 22;
+                del.style.fontSize = Theme.SizeSmall;
+                del.style.marginRight = 0;
+                del.style.marginBottom = 2;
+                Theme.Rounded(del, 4f);
                 row.Add(del);
 
                 _snapshotHost.Add(row);
@@ -912,7 +917,9 @@ namespace PerfAgent.UI
             var snap = PerfSession.Current;
             if (snap == null)
             {
-                _detailHost.Add(new Label("还没有数据。先点「跟随采集」，或从左上列表载入已有快照。"));
+                _detailHost.Add(Theme.EmptyState("◎", "还没有数据",
+                    "点「跟随采集」后**自己进 Play 操作**（战斗、开背包、切界面都算），结束时再点一次就会出结论；\n也可以从左上列表载入历史快照，或先跑一次「静态审计」（秒级、不需要进 Play）。",
+                    "跟随采集", ToggleFollowCapture));
                 return;
             }
 
@@ -935,7 +942,9 @@ namespace PerfAgent.UI
         {
             if (snap.findings.Count == 0)
             {
-                _detailHost.Add(new Label("未发现超出预算的问题。"));
+                _detailHost.Add(Theme.EmptyState("✓", "未发现超出预算的问题",
+                    "当前快照的指标全部在预算内。想更严格就把左边的预算调小再「重新分析」；\n也可以用「静态审计」查资源与代码里的隐患。",
+                    null, null, Theme.Good));
                 return;
             }
 
@@ -944,24 +953,26 @@ namespace PerfAgent.UI
                 var f = snap.findings[i];
                 var card = new VisualElement();
                 card.style.marginBottom = 6;
-                card.style.paddingLeft = 8;
-                card.style.paddingRight = 8;
-                card.style.paddingTop = 6;
-                card.style.paddingBottom = 6;
-                card.style.backgroundColor = new Color(0.17f, 0.18f, 0.2f);
+                Theme.Pad(card, 9, 9, 7, 7);
+                card.style.backgroundColor = Theme.CardBgAlt;
+                Theme.Rounded(card, 4f);
                 card.style.borderLeftWidth = 4;
                 card.style.borderLeftColor = SeverityColor(f.severity);
 
                 var header = new Label("[" + SeverityLabel(f.severity) + "] " + f.title);
                 header.style.unityFontStyleAndWeight = FontStyle.Bold;
                 header.style.whiteSpace = WhiteSpace.Normal;
+                header.style.fontSize = Theme.SizeBody;
+                header.style.color = Theme.Text;
                 card.Add(header);
 
                 if (!string.IsNullOrEmpty(f.detail))
                 {
                     var detail = new Label(f.detail);
                     detail.style.whiteSpace = WhiteSpace.Normal;
-                    detail.style.color = new Color(0.78f, 0.8f, 0.84f);
+                    detail.style.fontSize = Theme.SizeSmall;
+                    detail.style.color = Theme.TextDim;
+                    detail.style.marginTop = 3;
                     card.Add(detail);
                 }
 
@@ -1256,12 +1267,12 @@ namespace PerfAgent.UI
             var records = PerfChangeLog.Load();
             if (records.Count == 0)
             {
-                _detailHost.Add(new Label("还没有执行过一键修复。\n\n在「结论」标签里，每条结论下方都会给出修复计划，"
-                    + "可执行步骤带「执行」按钮，点击前会弹窗列出将要修改的目标。"));
+                _detailHost.Add(Theme.EmptyState("↺", "还没有执行过一键修复",
+                    "在「结论」标签里，每条结论下方都会给出修复计划：可执行步骤带「执行」按钮，\n点击前会弹窗列出将要修改的目标，改完可在这里撤销。"));
                 return;
             }
 
-            _detailHost.Add(new Label("共 " + records.Count + " 条记录（新的在下），日志：ProjectSettings/PerfAgent/FixLog.json"));
+            _detailHost.Add(Theme.Hint(records.Count + " 条记录（新的在下）· 日志：ProjectSettings/PerfAgent/FixLog.json"));
 
             var clear = new Button(delegate
             {
@@ -1441,7 +1452,8 @@ namespace PerfAgent.UI
         {
             if (snap.frames.Count == 0)
             {
-                _detailHost.Add(new Label("没有帧数据（只做了静态审计）。"));
+                _detailHost.Add(Theme.EmptyState("—", "没有帧数据",
+                    "这份快照只做了静态审计（资源 / 场景 / 代码），不含运行时帧。\n点「跟随采集」自己进 Play 跑一段即可拿到帧数据。"));
                 return;
             }
 
@@ -1467,7 +1479,8 @@ namespace PerfAgent.UI
         {
             if (snap.markers.Count == 0)
             {
-                _detailHost.Add(new Label("无 Marker 数据。可能是抓帧时 Profiler 未记录，或该版本层级视图 API 形态不同（运行 API 探针确认）。"));
+                _detailHost.Add(Theme.EmptyState("—", "无 Marker 数据",
+                    "可能是采集期间 Profiler 未记录，或该 Unity 版本的层级视图 API 形态不同。\n点菜单「Tools > PerfAgent > API 探针」可以确认当前版本到底支持哪些成员。"));
                 return;
             }
             for (int i = 0; i < snap.markers.Count; i++)
@@ -1481,40 +1494,60 @@ namespace PerfAgent.UI
 
         void RenderAssets(PerfSnapshot snap)
         {
+            if (snap.assetIssues.Count == 0)
+            {
+                _detailHost.Add(Theme.EmptyState("✓", "未发现资源导入问题",
+                    "纹理 / 模型 / 音频的导入设置都在合理范围。", null, null, Theme.Good));
+                return;
+            }
+
             for (int i = 0; i < snap.assetIssues.Count && i < 200; i++)
             {
                 var a = snap.assetIssues[i];
-                var label = new Label("[" + SeverityLabel(a.severity) + "] " + a.path + "\n    " + a.issue + "\n    → " + a.suggestion);
-                label.style.whiteSpace = WhiteSpace.Normal;
-                label.style.marginBottom = 4;
-                label.style.color = SeverityColor(a.severity);
-                _detailHost.Add(label);
+                _detailHost.Add(Theme.IssueRow(
+                    Theme.SeverityTag(SeverityLabel(a.severity), SeverityColor(a.severity)) + " " + a.path,
+                    SeverityColor(a.severity),
+                    a.issue + "\n→ " + a.suggestion));
             }
         }
 
         void RenderScene(PerfSnapshot snap)
         {
+            if (snap.sceneIssues.Count == 0)
+            {
+                _detailHost.Add(Theme.EmptyState("✓", "未发现场景 / 物理反模式",
+                    "组件反模式、批处理漏网与物理配置都没找到问题。", null, null, Theme.Good));
+                return;
+            }
+
             for (int i = 0; i < snap.sceneIssues.Count && i < 200; i++)
             {
                 var v = snap.sceneIssues[i];
-                var label = new Label("[" + SeverityLabel(v.severity) + "] " + v.hierarchyPath + " (" + v.componentType + ")\n    " + v.issue + "\n    → " + v.suggestion);
-                label.style.whiteSpace = WhiteSpace.Normal;
-                label.style.marginBottom = 4;
-                label.style.color = SeverityColor(v.severity);
-                _detailHost.Add(label);
+                _detailHost.Add(Theme.IssueRow(
+                    Theme.SeverityTag(SeverityLabel(v.severity), SeverityColor(v.severity))
+                        + " " + v.hierarchyPath + "  ·  " + v.componentType,
+                    SeverityColor(v.severity),
+                    v.issue + "\n→ " + v.suggestion));
             }
         }
 
         void RenderCode(PerfSnapshot snap)
         {
+            if (snap.codeIssues.Count == 0)
+            {
+                _detailHost.Add(Theme.EmptyState("✓", "未发现脚本反模式",
+                    "每帧方法体里的堆分配、查找类 API、LINQ 等都没扫到。", null, null, Theme.Good));
+                return;
+            }
+
             for (int i = 0; i < snap.codeIssues.Count && i < 300; i++)
             {
                 var c = snap.codeIssues[i];
-                var label = new Label("[" + SeverityLabel(c.severity) + "] " + c.file + ":" + c.line + "  <" + c.pattern + ">\n    " + c.snippet + "\n    → " + c.suggestion);
-                label.style.whiteSpace = WhiteSpace.Normal;
-                label.style.marginBottom = 4;
-                label.style.color = SeverityColor(c.severity);
-                _detailHost.Add(label);
+                _detailHost.Add(Theme.IssueRow(
+                    Theme.SeverityTag(SeverityLabel(c.severity), SeverityColor(c.severity))
+                        + " " + c.file + ":" + c.line + "  ·  " + c.pattern,
+                    SeverityColor(c.severity),
+                    c.snippet + "\n→ " + c.suggestion));
             }
         }
 
