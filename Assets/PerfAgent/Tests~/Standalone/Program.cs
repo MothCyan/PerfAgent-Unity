@@ -73,6 +73,7 @@ namespace PerfAgent.RuleRegression
             LocalAnswerTests.Register(tests);
             FixSuggestionBriefTests.Register(tests);
             MessageHygieneTests.Register(tests);
+            NumberVerifierTests.Register(tests);
 
             var failed = 0;
             foreach (var test in tests)

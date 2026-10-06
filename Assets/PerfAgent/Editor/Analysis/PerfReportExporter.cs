@@ -17,8 +17,7 @@ namespace PerfAgent.Analysis
     /// </summary>
     public static class PerfReportExporter
     {
-        static readonly Regex NumberRegex = new Regex(@"(?<![\w.])\d+(?:\.\d+)?", RegexOptions.Compiled);
-        static readonly HashSet<string> IgnorableNumbers = new HashSet<string> { "0", "1", "2", "3" };
+        // 数值对账的正则与口径已搬到 NumberVerifier（那部分不依赖 Unity，可离线回归）
 
         // =====================================================================
         // Markdown
@@ -376,7 +375,13 @@ code{font-family:Consolas,monospace;background:#22262e;padding:1px 4px;border-ra
         // 幻觉校验
         // =====================================================================
 
-        /// <summary>找出报告文本中无法在证据集中回溯的数值。</summary>
+        /// <summary>
+        /// 找出报告文本中无法在证据集中回溯的数值。
+        ///
+        /// 口径全部在 <see cref="NumberVerifier"/>（那部分不依赖 Unity，可以离线回归）：
+        /// 「能回溯」包括直接引用、仅差精度、单位换算、求和差、求倍数、百分比 ——
+        /// 早期只做字符串比对，把「658,534,588」拆成三个数字、把 3.5469 当成没出处，附录里一半是误报。
+        /// </summary>
         /// <param name="dataText">
         /// 报告里由采集器写入的数据部分（环境表、指标表、口径说明等）。
         /// 这些数字都是直接从快照里抄的，不需要对账 —— 传进来可以避免把
@@ -384,72 +389,7 @@ code{font-family:Consolas,monospace;background:#22262e;padding:1px 4px;border-ra
         /// </param>
         public static List<string> UnverifiedNumbers(string text, PerfSnapshot s, string dataText = null)
         {
-            var allowed = new HashSet<string>();
-            if (s != null)
-            {
-                for (int i = 0; i < s.findings.Count; i++)
-                {
-                    var f = s.findings[i];
-                    for (int k = 0; k < f.evidence.Count; k++)
-                    {
-                        AddVariants(allowed, f.evidence[k].value);
-                        AddVariants(allowed, f.evidence[k].threshold);
-                        AddVariants(allowed, f.evidence[k].metric);
-                        AddVariants(allowed, f.evidence[k].source);
-                    }
-                }
-                for (int i = 0; i < s.metrics.Count; i++)
-                {
-                    AddVariants(allowed, Fmt(s.metrics[i].value));
-                    AddVariants(allowed, s.metrics[i].budget);
-                }
-                for (int i = 0; i < s.notes.Count; i++) AddVariants(allowed, s.notes[i]);
-            }
-            if (!string.IsNullOrEmpty(dataText)) AddVariants(allowed, dataText);
-
-            var result = new List<string>();
-            if (string.IsNullOrEmpty(text)) return result;
-
-            var seen = new HashSet<string>();
-            foreach (Match m in NumberRegex.Matches(text))
-            {
-                string n = m.Value;
-                if (IgnorableNumbers.Contains(n)) continue;
-                if (allowed.Contains(n) || allowed.Contains(Trim(n))) continue;
-                if (seen.Contains(n)) continue;
-                seen.Add(n);
-
-                int start = Math.Max(0, m.Index - 24);
-                int len = Math.Min(text.Length - start, 56);
-                result.Add(n + "  ←  ..." + text.Substring(start, len).Replace("\n", " ").Trim() + "...");
-            }
-            return result;
-        }
-
-        static void AddVariants(HashSet<string> set, string raw)
-        {
-            if (string.IsNullOrEmpty(raw)) return;
-            foreach (Match m in NumberRegex.Matches(raw))
-            {
-                set.Add(m.Value);
-                set.Add(Trim(m.Value));
-                double d;
-                if (double.TryParse(m.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out d))
-                {
-                    set.Add(d.ToString("0.##", CultureInfo.InvariantCulture));
-                    set.Add(d.ToString("0.#", CultureInfo.InvariantCulture));
-                    set.Add(d.ToString("0", CultureInfo.InvariantCulture));
-                    set.Add(Math.Round(d).ToString(CultureInfo.InvariantCulture));
-                }
-            }
-        }
-
-        static string Trim(string n)
-        {
-            int dot = n.IndexOf('.');
-            if (dot < 0) return n;
-            string t = n.TrimEnd('0').TrimEnd('.');
-            return t.Length == 0 ? "0" : t;
+            return NumberVerifier.Unverified(text, s, dataText);
         }
 
         // =====================================================================

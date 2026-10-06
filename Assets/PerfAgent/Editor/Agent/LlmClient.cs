@@ -34,6 +34,8 @@ namespace PerfAgent.Agent
         public static int LastReasoningLength;
         /// <summary>最近一次响应里是否带工具调用。</summary>
         public static bool LastHadToolCalls;
+        /// <summary>最近一次响应的正文是不是「其实来自 reasoning_content」（端点没给 content）。</summary>
+        public static bool LastContentFromReasoning;
 
         public static void Send(List<object> messages,
             Action<string> onDelta,
@@ -635,12 +637,15 @@ namespace PerfAgent.Agent
                 LastContentLength = _content.Length;
                 LastReasoningLength = _reasoning.Length;
                 LastHadToolCalls = _tools.Count > 0;
+                LastContentFromReasoning = false;
 
                 // 正文为空但拿到了思维链：不要当成失败丢掉（推理类模型偶发这样），
-                // 但要如实标注它是推理内容，而不是正式结论。
+                // 但要如实标注它的来源，而不是让人以为这是正常的正文。
                 if (_content.Length == 0 && _reasoning.Length > 0)
                 {
-                    _content.Append("（模型只返回了推理内容，没有正文 —— 以下为它的思维过程，请自行判断）\n\n")
+                    LastContentFromReasoning = true;
+                    _content.Append("（说明：本次响应只有推理内容、没有正文 —— 已按正文展示。")
+                            .Append("若经常如此，说明这个端点/模型不适合本工具的流式流程，换一个返回正文的模型更稳。）\n\n")
                             .Append(_reasoning);
                 }
 

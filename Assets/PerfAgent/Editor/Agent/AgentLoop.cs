@@ -308,7 +308,9 @@ namespace PerfAgent.Agent
             if (unverified.Count == 0) return text;
 
             var sb = new StringBuilder(text);
-            sb.Append("\n\n---\n**证据校验**：以下数值未能在本次工具返回的证据集中找到出处，请人工复核（可能是模型推断或单位换算产生的偏差）：\n");
+            sb.Append("\n\n---\n**证据校验**：以下数字既不是证据里的直接取值，也不是由证据换算 / 求倍数 / 求和差得到的"
+                      + "（带千位分隔符的 `658,534,588` 算同一个数，3.5469 与 3.55 也算同一个值）——"
+                      + "请人工复核：\n");
             for (int i = 0; i < unverified.Count && i < 12; i++)
                 sb.Append("- ").Append(unverified[i]).Append('\n');
             return sb.ToString();
