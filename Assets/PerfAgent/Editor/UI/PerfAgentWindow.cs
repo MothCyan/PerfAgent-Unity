@@ -90,8 +90,15 @@ namespace PerfAgent.UI
         /// <summary>正在等回答（防止重复发送）。不用按钮的 enabled 状态兼职：见 SetSending。</summary>
         bool _sending;
 
-        /// <summary>面板的最小尺寸（只用于 minSize 约束手动拖拽；不主动改窗口尺寸）。</summary>
-        static readonly Vector2 PanelMinSize = new Vector2(900f, 600f);
+        /// <summary>
+        /// 面板的最小尺寸（只用于 minSize 约束手动拖拽；工具**不主动**改窗口尺寸）。
+        ///
+        /// 460x300 是「能拖成小窗口」与「两栏不被挤爆」的平衡点（用户要求：要能变成小窗口，
+        /// 贴着 Game 视图看）：左栏最小 240 + 间距 10 + 右栏最小 180 + 根容内边距 20 ≈ 450，
+        /// 再小右栏（含发送按钮）就会被顶出窗口外。竖向 300 以下内容会互相挤，所以到此为止 ——
+        /// 自身都能滚的列（左栏 / 明细 / 对话）在矮窗口里依旧可用。
+        /// </summary>
+        static readonly Vector2 PanelMinSize = new Vector2(460f, 300f);
 
         [MenuItem(MenuRoot + "打开性能诊断面板 %#p", false, 100)]
         public static void Open()
