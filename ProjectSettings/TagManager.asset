@@ -3,7 +3,10 @@
 --- !u!78 &1
 TagManager:
   serializedVersion: 2
-  tags: []
+  tags:
+  - Bird
+  - Brick
+  - Pig
   layers:
   - Default
   - TransparentFX
@@ -40,4 +43,16 @@ TagManager:
   m_SortingLayers:
   - name: Default
     uniqueID: 0
+    locked: 0
+  - name: Background
+    uniqueID: 1050805185
+    locked: 0
+  - name: Trees
+    uniqueID: 1182191077
+    locked: 0
+  - name: Floor
+    uniqueID: 3656647777
+    locked: 0
+  - name: Foreground
+    uniqueID: 151119413
     locked: 0

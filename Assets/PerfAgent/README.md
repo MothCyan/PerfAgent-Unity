@@ -60,33 +60,31 @@
 直接粘进 issue、聊天窗口，或者丢给外部 AI 继续追问。
 复制的内容与「导出 MD」是**同一份**，所以看到的和导出的一定一致。
 
-## 想亲眼验证它准不准：前后对照样例工程
+## 想亲眼验证它准不准：工程内的前后对照样例
 
-仓库根的 `Samples/` 里放了一个**单场景小游戏的两种版本**——同一个玩法，两套完整工程：
+工程里带了一个**单场景小游戏的两份实现**（同一个玩法，都直接放在 `Assets/` 下，不用另开工程）：
 
-- `Samples/AngryBirds_before/`：优化之前的现场（每帧 `new List`、每帧 LINQ、`Camera.main`、
-  每帧 `GetComponent`、每帧 `Debug.Log`、每帧 `Instantiate/Destroy`、手动 `GC.Collect`……共 16 处编号缺陷）；
-- `Samples/AngryBirds_after/`：逐条修完之后（**功能完全一致**，每帧零分配、0 条编译警告）。
+- `Assets/PerfAgentSample/Before/`：`Scenes/AngryBirdsBefore.unity` + `Scripts/Before*.cs`，
+  优化之前的现场（每帧 `new List`、每帧 LINQ、`Camera.main`、每帧 `GetComponent`、每帧 `Debug.Log`、
+  每帧 `Instantiate/Destroy`、手动 `GC.Collect`……共 16 处编号缺陷）；
+- `Assets/PerfAgentSample/After/`：`Scenes/AngryBirdsAfter.unity` + `Scripts/After*.cs`，
+  逐条修完之后（**功能完全一致**，每帧零分配、0 条编译警告）。
 
-**最快的测法**（不用切换工程，两份快照在同一个工程里，可直接对比）：
+两份脚本的类名与文件名都带前缀（`BeforeGameManager` / `AfterGameManager`…），场景也各自改名，
+After 那一份的 asset GUID 整体重发过，因此能同时待在一个工程里互不干扰；两个场景都已登记在 Build Settings 里。
 
 ```
-菜单 Tools/PerfAgent/样例工程/安装 Before（优化之前）
-  → Play → 面板「跟随采集」玩 20~30 秒 → 生成快照
-  → 卸载 → 安装 After（优化之后）→ 再采一份
+打开 Before/Scenes/AngryBirdsBefore.unity → Play →「跟随采集」玩 20~30 秒 → 生成快照
+  → 打开 After/Scenes/AngryBirdsAfter.unity → 再采一份
   → 「对比」页选这两份快照
 ```
 
-安装菜单会自动把样例的 `Assets/**` 复制到 `Assets/PerfAgentFixture`、补上样例需要的
-Tag（`Bird`/`Brick`/`Pig`）与 Sorting Layer（沿用样例的 uniqueID）、把场景加进 Build Settings 并打开；
-卸载会把它们全部回滚。两版的脚本同名，所以一次只装一版。
+样例需要的 Tag（`Bird`/`Brick`/`Pig`）与 Sorting Layer 已经写进 `ProjectSettings/`，
+遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自建宿主对象且只在各自场景里启动，所以打开场景 Play 就能用。
 
-也可以按 `Samples/README.md` 的「用法 B」用 Unity Hub 单独打开这两个工程
-（注意：跨工程的快照不能直接对比，需要手动拷 JSON）。
-
-- 缺陷编号与修法逐条对照：`Samples/PERF-FAULTS.md`
-- 上游出处、MIT 许可与我们改了什么：`Samples/NOTICE.md`
-- 两种用法、安装器做了什么：`Samples/README.md`
+- 缺陷编号与修法逐条对照：`Assets/PerfAgentSample/PERF-FAULTS.md`
+- 上游出处、MIT 许可与我们改了什么：`Assets/PerfAgentSample/NOTICE.md`
+- 怎么测、目录结构、工程侧注意事项：`Assets/PerfAgentSample/README.md`
 
 ## 为什么要接 AI 做 Agent（以及没有 AI 时它是什么）
 

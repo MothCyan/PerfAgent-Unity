@@ -489,36 +489,44 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 一句话分工：**本地给事实与证据（可回溯、不联网），AI 给因果、取舍与人话（联网、由你开）。**
 单纯「有没有超预算 / 数字是多少」这类问题，本地答得更可靠 —— 数字是算出来的，不会被模型改写。
 
-### 11.12 前后对照样例工程（`Samples/`）
+### 11.12 前后对照样例（工程内 `Assets/PerfAgentSample/`）
 
-`Tests~/Standalone` 的最小用例只能验证**纯逻辑**；「同一个游戏，优化前 vs 优化后」这种现场只能靠真工程。
-上游选的是 `dgkanatsios/AngryBirdsStyleGame`（MIT，**只有一个场景**，Unity 2021.3，2.2 MB 级）：
+`Tests~/Standalone` 的最小用例只能验证**纯逻辑**；「同一个游戏，优化前 vs 优化后」这种现场只能靠真场景。
+上游选的是 `dgkanatsios/AngryBirdsStyleGame`（MIT，**只有一个场景**，Unity 2021.3，2 MB 级）。
 
-- `Samples/AngryBirds_before/`：上游原样 + 一份刻意写成反面样板的 `TelemetryMonitor.cs`（F1–F14）
-  + `GameManager` 的每帧日志 / `OnGUI` 拼接（F15、F16）；
-- `Samples/AngryBirds_after/`：**同样的脚本文件清单**、同样的玩法，逐条修掉（`PERF-FAULTS.md` 的 G1–G12）。
+**两份都装进本工程的 `Assets/` 里**（不是两个独立工程 —— 开两个工程意味着两份快照在不同
+`ProjectSettings/PerfAgent/Snapshots` 下，「对比」页永远选不到一起）：
 
-四件必须知道的事：
+- `Assets/PerfAgentSample/Before/`：`Scenes/AngryBirdsBefore.unity` + `Scripts/Before*.cs`，
+  上游原样 + 反面样板 `BeforeTelemetryMonitor`（F1–F14）+ `BeforeGameManager` 的每帧日志 / `OnGUI` 拼接（F15、F16）；
+- `Assets/PerfAgentSample/After/`：`Scenes/AngryBirdsAfter.unity` + `Scripts/After*.cs`，同样玩法，逐条修掉（G1–G12）。
 
-1. **必须放在仓库根的 `Samples/`，不能放 `Assets/` 下**。两份工程有同名脚本（`GameManager`、`Bird`…），
-   放进 `Assets/` 会被同一个工程一次编译两份 → 类名冲突；Unity 也只会导入 `Assets/` 与 `Packages/`，根目录天然免疫。
-2. 插件通过 `Packages/manifest.json` 的 `"com.night.perfagent": "file:../../Assets/PerfAgent"` 挂上，
-   **不需要把插件复制进样例工程**，插件改了样例立刻生效。
+六件必须知道的事：
+
+1. **两份共存靠“改名 + 重发 GUID”**。脚本类名与文件名都必须加前缀
+   （`GameManager` → `BeforeGameManager` / `AfterGameManager`，含 `Constants`/`Enums` 与枚举类型），
+   因为 MonoBehaviour 要求文件名 = 类名；场景也要改名。After 那一份的 asset GUID 要**整体重发**
+   并重写其内部引用（场景/预制体里的 `m_Script`、材质与精灵引用），否则两份撞 GUID 会坏引用。
+   校验办法：把两份场景/预制体引用的 GUID 与各自的 `.meta` 集合对一遍，并确认两份集合无交集。
+   改名的坑：注释里的撇号（`don't`、`we'll`）会被当成字符字面量，**只能用双引号切字符串**，
+   否则撇号之后的大段代码会被当成“字符串”跳过改名（实测漏掉了 `public SlingshotState slingshotState;`）。
+2. **共享插件只能留一份**：`PerfAgentSample/Plugins/Demigiant/DOTween`。两份都放会命中
+   `Multiple precompiled assemblies with the same name 'DOTween'`，`DOTweenModule*.cs` 也会 `CS0101` 重复定义。
+   同理，上游那份 `Assets/Resources/BillingMode.json` 两份都不能留（同名 Resources 路径冲突）。
 3. 注入的缺陷必须落在**每帧方法体内**（`Update`/`OnGUI`/`OnCollisionEnter2D`…）才会被脚本反模式扫描抓到；
-   After 里那种「每秒刷新一次的 `FindObjectsOfType`」写在普通方法里，按判据不算反模式 —— 这正是
-   「静态扫描」与「动态采集」互补的分界（`PERF-FAULTS.md` 第五节）。
-4. 遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自己起隐藏宿主对象，**不改场景文件**，
-   避免为了挂一个组件去手改 `.unity` 的 YAML（那样极易把场景改坏）。
-5. **提供了一键装载菜单**（`Editor/Samples/SampleFixtureInstaller.cs`，`Tools/PerfAgent/样例工程/`）：
-   把样例的 `Assets/**` 复制进当前工程的 `Assets/PerfAgentFixture`（已在根 .gitignore 忽略），
-   一次只装一版（两版脚本同名），卸载时删目录 + 回滚项目设置 + 从 Build Settings 移除场景、**保留快照**。
-   为什么要有它：`Samples/` 不在 `Assets/` 下，Unity 不导入 → Project 窗口里看不到；
-   而快照按工程存放（`ProjectSettings/PerfAgent/Snapshots`），跨工程连「对比」都选不到一起。
-   注意装载时必须同步三样东西，手工拷贝最容易漏：
-   - **Tag**：`FindGameObjectsWithTag` / `CompareTag` 用到未定义的 Tag 会直接抛异常（`Tag: Bird is not defined`）；
-   - **Sorting Layer**：场景里存的是 **uniqueID 而不是名字**，补层时必须沿用样例的 ID
-     （且该 ID 是 `uint`，样例里有超过 `int.MaxValue` 的值，写入 TagManager 要按位转）；
-   - **Build Settings**：`SceneManager.LoadScene(buildIndex)` / `Application.loadedLevel` 都依赖场景已登记。
+   After 里那种「每秒刷新一次的 `FindObjectsOfType`」写在普通方法里，按判据不算反模式 ——
+   这正是「静态扫描」与「动态采集」互补的分界（`PERF-FAULTS.md` 第二节）。
+4. 遥测脚本用 `[RuntimeInitializeOnLoadMethod]` 自己起隐藏宿主对象，**不改场景文件**；
+   并用 `SceneManager.GetActiveScene().name` 判断“只在属于自己那一版的场景里启动”，
+   否则两份都在同一个 Assembly-CSharp 里，开 Before 场景时 After 的那份也会跟着跑、污染测量。
+5. 工程设置必须一次到位（现在已提交在 `ProjectSettings/` 里）：
+   - **Tag**：`Bird` / `Brick` / `Pig`，没定义时 `FindGameObjectsWithTag` / `CompareTag` 直接抛异常；
+   - **Sorting Layer**：`Background`/`Trees`/`Floor`/`Foreground`，**场景里存的是 uniqueID 而不是名字**，
+     必须沿用上游的 ID（且该 ID 是 `uint`，有超过 `int.MaxValue` 的值）；
+   - **Build Settings**：两个场景都要登记（两版的“重开一局”分别依赖 `buildIndex` 与 `loadedLevel`）。
+6. 文档与许可都在 `Assets/PerfAgentSample/` 里（`README.md` 怎么测、`PERF-FAULTS.md` 缺陷表、
+   `NOTICE.md` 改动说明、`License.md` 上游 MIT 原文）—— 放在 `Assets/` 下会被当成 TextAsset，
+   好处是在 Project 窗口里直接双击就能看。
 
 ## 十二、离线验证与工具链（本机实测过的坑）
 
@@ -526,11 +534,11 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
   `Data\Managed\UnityEngine\UnityEngine.dll`（门面）+ 全部 `*Module.dll` 可以同时引用，
   只排除 `UnityEditor.dll`。早先为躲 CS0433 把门面排掉，结果一引用 DOTween.dll 就报
   `CS0012 类型 Vector3 在未引用的程序集 UnityEngine 中定义`（第三方 dll 的签名解析不到）。
-- 样例工程两份都要过一遍离线编译：Before 期望 exit=0 但**留 4 条过时 API 警告**（这本身就是「优化之前」的证据），
-  After 期望 exit=0 **且 0 警告**。
+- 样例两份脚本要**一起过一遍离线编译**（它们在真实工程里同属 Assembly-CSharp，能顺便查出重名/重复定义）：
+  Before 期望 exit=0 但**留 4 条过时 API 警告**（这本身就是「优化之前」的证据），After 期望 exit=0 **且 0 警告**。
 - 从 GitHub 取上游工程：本机 `git clone` 容易长时间卡住（进程会挂住终端），
   `Invoke-WebRequest -OutFile` 在 PS 5.1 也会因进度条渲染报假异常 ——
   用 Python `urllib` 直接下 `codeload.github.com/<owner>/<repo>/zip/refs/heads/<branch>` 最省事。
-- `<你的工程>/Samples/**` 这类**嵌套 Unity 工程**打开后会产生自己的 `Library/`、`Temp/`、`Logs/`，
-  根 `.gitignore` 里要显式加 `/Samples/*/[Ll]ibrary/` 之类的规则（原有的 `/Library/` 只锚定根目录）。
+- 批量改名/重写 GUID 这类机械改动**用脚本做、再靠编译校验**；脚本里的字符串切分只认双引号
+  （注释里的撇号会把后面的代码吞进“字符串”，实测漏改）。
 

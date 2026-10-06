@@ -8,4 +8,10 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/SampleScene.unity
     guid: 99c9720ab356a0642a771bea13969a05
+  - enabled: 1
+    path: Assets/PerfAgentSample/Before/Scenes/AngryBirdsBefore.unity
+    guid: 4a326b4413a8cec44b3aa2d59ea66163
+  - enabled: 1
+    path: Assets/PerfAgentSample/After/Scenes/AngryBirdsAfter.unity
+    guid: 315630f91c7a4d17ace5d0b6319fa788
   m_configObjects: {}

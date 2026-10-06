@@ -55,22 +55,6 @@ Thumbs.db
 # 本机备份
 manifest.json.bak
 
-# 「安装样例工程」菜单装进来的东西（Tools/PerfAgent/样例工程/）
-/Assets/PerfAgentFixture/
-
-# Samples/ 下的前后对照样例工程（它们是独立 Unity 工程，打开后会生成同样的本地目录）
-/Samples/*/[Ll]ibrary/
-/Samples/*/[Tt]emp/
-/Samples/*/[Oo]bj/
-/Samples/*/[Bb]uild/
-/Samples/*/[Bb]uilds/
-/Samples/*/[Ll]ogs/
-/Samples/*/[Uu]ser[Ss]ettings/
-/Samples/*/[Mm]emoryCaptures/
-/Samples/*/*.csproj
-/Samples/*/*.unityproj
-/Samples/*/*.sln
-
 # PerfAgent 的运行状态：快照 / 对话记录 / 修复日志 / 本机设置
 # 作者刻意把它放在 ProjectSettings/ 下就是为了避免误提交（见 PerfAgentSettings.cs 注释），
 # 这里显式忽略。这些都是跑一次就变的本机数据，且快照动辄几百 KB。
