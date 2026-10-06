@@ -121,14 +121,17 @@ namespace PerfAgent.UI
         static readonly Vector2 PanelMinSize = new Vector2(460f, 300f);
 
         /// <summary>
-        /// 面板的**默认尺寸**（只用在「我们从大缩成小、现在要放回去」这两条恢复路径上）。
+        /// 面板的**默认尺寸 = 900x600**，也就是这个面板**最初被写出来时的大小**
+        /// （初版 `Open()` 就是 <c>window.minSize = new Vector2(900, 600)</c>，Unity 按 minSize 开窗）。
         ///
-        /// 为什么不原样放回「缩之前的尺寸」就完事（实测反馈：「性能诊断窗口怎么变那么小了，该回去」）：
-        /// 那个尺寸本身可能早就被历史问题（小窗口卡住的那阵子）弄得很短，原样放回去 = 一直继承那个短尺寸。
-        /// 所以恢复时取「存的尺寸」与「默认尺寸」的较大值：工具只管把**自己造成的缩小**恢复够用；
-        /// 用户之后想拖多大、多小都随意，我们不会去改（也不会存回去）。
+        /// 它只在两条**恢复**路径上当“抬底”：
+        ///   1. 跟随采集结束 / 手动停止 → 把大缩小的面板放回去；
+        ///   2. 上次在小窗口状态下退出 Unity → 下次打开时纠正。
+        /// 为什么不原样放回「缩之前的尺寸」（实测反馈：「怎么变那么小了，该回去」）：
+        /// 那个尺寸早就被历史问题（小窗口卡住那阵子）弄短了，原样放回 = 一直继承那个短尺寸。
+        /// 抬底只抬高、不压低：你自己拖得比 900x600 更大的话，恢复时会保留你的尺寸。
         /// </summary>
-        static readonly Vector2 PanelDefaultSize = new Vector2(1100f, 760f);
+        static readonly Vector2 PanelDefaultSize = new Vector2(900f, 600f);
 
         /// <summary>把窗口恢复到够用的尺寸：不低于 <see cref="PanelDefaultSize"/>，位置不变。</summary>
         void RestoreComfortableSize(string why)
@@ -153,6 +156,8 @@ namespace PerfAgent.UI
         {
             var window = GetWindow<PerfAgentWindow>("性能诊断");
             window.minSize = PanelMinSize;
+            // 打开时抬到面板最初的尺寸（900x600）：只抬不压 —— 你拖得更大就保留你的。
+            window.RestoreComfortableSize("打开性能诊断面板");
             window.Show();
         }
 
