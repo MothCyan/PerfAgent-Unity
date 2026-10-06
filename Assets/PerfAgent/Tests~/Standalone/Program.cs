@@ -369,17 +369,15 @@ namespace PerfAgent.RuleRegression
             True(!StripGeometry.TryParse("0;0;NaN;600", out x, out y, out w, out h), "NaN 不能当尺寸");
             True(!StripGeometry.TryParse("0;0;900;Infinity", out x, out y, out w, out h), "Infinity 不能当尺寸");
 
-            // 「面板被恢复成小窗口」也要能判定（实测用户截图：整个面板只剩一条监视行、字被截到「口径」）。
-            // minSize 只约束手动拖拽，管不住从布局恢复 / 细条来回后 minSize 被域重载清掉 —— 所以要主动撑。
+            // 「这个尺寸能不能当面板尺寸用」要能判定：宽度够但高度不够（实测 1460x85）也不能当。
+            // 它只用于「收起前的尺寸保存判定」——不用于自动改窗口尺寸：
+            // 工具不擅自撑窗口（用户明确否掉过），停靠窗口的尺寸只能由人拖。
             True(!StripGeometry.NeedsGrow(StripGeometry.PanelWidth, StripGeometry.PanelHeight),
-                "面板标准尺寸本身不该被判成「需要撑大」");
-            True(StripGeometry.NeedsGrow(590f, 55f), "590x55 这种被压扁的面板必须要求撑大（实测尺寸）");
-            True(StripGeometry.NeedsGrow(StripGeometry.PanelWidth, 200f), "只有高度不够也要撑");
+                "面板标准尺寸本身不该被判成「不能当面板尺寸」");
+            True(StripGeometry.NeedsGrow(590f, 55f), "590x55 这种被压扁的尺寸不能当面板尺寸（实测尺寸）");
+            True(StripGeometry.NeedsGrow(StripGeometry.PanelWidth, 200f), "只有高度不够也不算面板尺寸");
             True(!StripGeometry.LooksLikeStrip(StripGeometry.PanelWidth, StripGeometry.PanelHeight),
                 "面板标准尺寸不能被当成细条（否则收起时会把标准尺寸丢掉）");
-            Equal((double)StripGeometry.PanelWidth, (double)StripGeometry.Grow(590f, StripGeometry.PanelWidth),
-                "撑大要取到下限");
-            Equal(1200.0, (double)StripGeometry.Grow(1200f, StripGeometry.PanelWidth), "已经够大就原样保留");
         }
 
         /// <summary>

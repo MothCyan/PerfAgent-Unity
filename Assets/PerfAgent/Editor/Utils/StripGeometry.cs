@@ -31,16 +31,10 @@ namespace PerfAgent.Utils
         public const float PanelWidth = 900f;
         public const float PanelHeight = 600f;
 
-        /// <summary>这个窗口尺寸是不是小到必须被擑回面板尺寸（保持左上角不变地擑）。</summary>
+        /// <summary>这个窗口尺寸是不是小到不能当「面板尺寸」用（用于收起前的尺寸保存判定）。</summary>
         public static bool NeedsGrow(float width, float height)
         {
             return width < PanelWidth - 1f || height < PanelHeight - 1f;
-        }
-
-        /// <summary>把尺寸擑到不低于下限（已足够大就原样返回）。</summary>
-        public static float Grow(float current, float min)
-        {
-            return current < min ? min : current;
         }
 
         /// <summary>
