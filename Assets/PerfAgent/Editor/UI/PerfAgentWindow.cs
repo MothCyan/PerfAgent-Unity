@@ -120,6 +120,34 @@ namespace PerfAgent.UI
         /// </summary>
         static readonly Vector2 PanelMinSize = new Vector2(460f, 300f);
 
+        /// <summary>
+        /// 面板的**默认尺寸**（只用在「我们从大缩成小、现在要放回去」这两条恢复路径上）。
+        ///
+        /// 为什么不原样放回「缩之前的尺寸」就完事（实测反馈：「性能诊断窗口怎么变那么小了，该回去」）：
+        /// 那个尺寸本身可能早就被历史问题（小窗口卡住的那阵子）弄得很短，原样放回去 = 一直继承那个短尺寸。
+        /// 所以恢复时取「存的尺寸」与「默认尺寸」的较大值：工具只管把**自己造成的缩小**恢复够用；
+        /// 用户之后想拖多大、多小都随意，我们不会去改（也不会存回去）。
+        /// </summary>
+        static readonly Vector2 PanelDefaultSize = new Vector2(1100f, 760f);
+
+        /// <summary>把窗口恢复到够用的尺寸：不低于 <see cref="PanelDefaultSize"/>，位置不变。</summary>
+        void RestoreComfortableSize(string why)
+        {
+            try
+            {
+                var p = position;
+                float w = Mathf.Max(p.width, PanelDefaultSize.x);
+                float h = Mathf.Max(p.height, PanelDefaultSize.y);
+                if (Mathf.Abs(w - p.width) < 1f && Mathf.Abs(h - p.height) < 1f) return;
+
+                position = new Rect(p.x, p.y, w, h);
+                UnityEngine.Debug.Log("[PerfAgent] " + why + "：把面板尺寸恢复到 "
+                    + w.ToString("0") + "x" + h.ToString("0") + "（原 "
+                    + p.width.ToString("0") + "x" + p.height.ToString("0") + "）。");
+            }
+            catch { }
+        }
+
         [MenuItem(MenuRoot + "打开性能诊断面板 %#p", false, 100)]
         public static void Open()
         {
@@ -411,6 +439,7 @@ namespace PerfAgent.UI
                 try { SessionState.EraseString(PreCompactRectKey); } catch { }
                 UnityEngine.Debug.Log("[PerfAgent] 上次是在小窗口状态下退出/重载的（窗口布局是持久的），"
                     + "已把面板恢复成 " + position.width.ToString("0") + "x" + position.height.ToString("0") + "。");
+                RestoreComfortableSize("上次留在小窗口状态");
             }
             catch { }
         }
@@ -686,6 +715,8 @@ namespace PerfAgent.UI
                     _preCompactRect = new Rect(position.x, position.y,
                         CompactWindowGeometry.PanelWidth * 2f, CompactWindowGeometry.PanelHeight * 2f);
                 if (moveWindow) RestorePanelRect();
+                // 放回去之后如果还是矮/窄（历史遗留的小尺寸），抬到默认尺寸
+                if (moveWindow) RestoreComfortableSize("跟随采集结束，面板恢复原尺寸");
 
                 try { SessionState.EraseString(PreCompactRectKey); } catch { }
             }
