@@ -154,22 +154,72 @@ namespace PerfAgent.Agent
         }
 
         /// <summary>
-        /// 连通性自检（供配置窗口的「测试连接」用）。
+        /// 连通性校验的结果。比「bool + 一句话」多带上下文，界面才能逐项显示
+        /// （哪一步过了、哪一步没过、卡在鉴权还是网络），而不是只丢一句「失败」。
+        /// </summary>
+        public class PingResult
+        {
+            public bool ok;
+            public string message = "";
+            /// <summary>耗时（毫秒）。</summary>
+            public double elapsedMs;
+            /// <summary>HTTP 状态码；0 = 根本没连上（DNS / TCP / 超时）。</summary>
+            public int httpCode;
+            /// <summary>服务端回传的模型名 —— 有它才能确认「模型名也填对了」。</summary>
+            public string serverModel = "";
+            /// <summary>实际请求的 URL（补全路径之后）。</summary>
+            public string effectiveUrl = "";
+            /// <summary>失败归类：endpoint / key / model / busy / network / timeout / auth / notfound / request / server。</summary>
+            public string errorKind = "";
+        }
+
+        /// <summary>
+        /// 连通性自检（旧签名，保留给已有调用方）。
+        /// </summary>
+        public static void Ping(Action<bool, string> done)
+        {
+            PingEx(delegate (PingResult r) { done(r.ok, r.message); });
+        }
+
+        /// <summary>
+        /// 连通性自检（供配置窗口的「连通性校验」用）。
         ///
         /// 刻意只发一个固定字符串 "ping"：不带 tools、不带快照、不带任何工程信息。
         /// 目的只是确认 Endpoint / Key / 模型名能通，不是一个会泄露数据的请求。
         /// </summary>
-        public static void Ping(Action<bool, string> done)
+        public static void PingEx(Action<PingResult> done)
         {
+            var result = new PingResult();
             var cfg = PerfAgentSettings.Config;
-            if (string.IsNullOrEmpty(cfg.endpoint)) { done(false, "未填写 Endpoint。"); return; }
-            if (string.IsNullOrEmpty(cfg.model)) { done(false, "未填写模型名。"); return; }
-            if (!cfg.HasApiKey && !IsLocalEndpoint(cfg.endpoint))
+
+            if (string.IsNullOrEmpty(cfg.endpoint))
             {
-                done(false, "未填写 API Key（若为本机推理服务则不需要）。");
+                result.errorKind = "endpoint";
+                result.message = "未填写 Endpoint。";
+                done(result);
                 return;
             }
-            if (Busy) { done(false, "已有请求正在进行，等它结束再试。"); return; }
+            if (string.IsNullOrEmpty(cfg.model))
+            {
+                result.errorKind = "model";
+                result.message = "未填写模型名。";
+                done(result);
+                return;
+            }
+            if (!cfg.HasApiKey && !IsLocalEndpoint(cfg.endpoint))
+            {
+                result.errorKind = "key";
+                result.message = "未填写 API Key（若为本机推理服务则不需要）。";
+                done(result);
+                return;
+            }
+            if (Busy)
+            {
+                result.errorKind = "busy";
+                result.message = "已有请求正在进行，等它结束再试。";
+                done(result);
+                return;
+            }
 
             var body = new Dictionary<string, object>();
             body["model"] = cfg.model;
@@ -184,6 +234,8 @@ namespace PerfAgent.Agent
 
             Busy = true;
             string url = NormalizeEndpoint(cfg.endpoint);
+            result.effectiveUrl = url;
+
             var request = new UnityWebRequest(url, "POST");
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(MiniJson.Serialize(body)));
             request.downloadHandler = new DownloadHandlerBuffer();
@@ -202,13 +254,15 @@ namespace PerfAgent.Agent
 
                 EditorApplication.update -= tick;
                 Busy = false;
+                result.elapsedMs = (EditorApplication.timeSinceStartup - started) * 1000.0;
 
                 try
                 {
                     if (timedOut && !finished)
                     {
                         try { request.Abort(); } catch { }
-                        done(false, "超时（35s）。检查 Endpoint 是否可访问、是否需要代理。");
+                        result.errorKind = "timeout";
+                        result.message = "超时（35s）。检查 Endpoint 是否可访问、是否需要代理。";
                         return;
                     }
 
@@ -219,6 +273,7 @@ namespace PerfAgent.Agent
                     httpOk = !request.isNetworkError && !request.isHttpError;
 #endif
 
+                    result.httpCode = (int)request.responseCode;
                     string text = "";
                     try { text = request.downloadHandler.text ?? ""; } catch { }
 
@@ -229,25 +284,51 @@ namespace PerfAgent.Agent
                         msg.Append("HTTP ").Append(request.responseCode).Append("  ").Append(request.error);
                         msg.Append("\n实际请求：POST ").Append(url);
                         if (request.responseCode == 404)
+                        {
+                            result.errorKind = "notfound";
                             msg.Append("\n\n404 = 这个路径不存在。检查 Endpoint 是否少了 /v1/chat/completions。");
+                        }
                         else if (request.responseCode == 401 || request.responseCode == 403)
+                        {
+                            result.errorKind = "auth";
                             msg.Append("\n\n401/403 = 鉴权失败。Key 无效、已过期，或与这个服务商不匹配。");
+                        }
                         else if (request.responseCode == 400)
+                        {
+                            result.errorKind = "request";
                             msg.Append("\n\n400 = 请求被拒。多半是模型名不存在，当前填的是「").Append(cfg.model).Append("」。");
+                        }
+                        else if (request.responseCode == 429)
+                        {
+                            result.errorKind = "request";
+                            msg.Append("\n\n429 = 被限流（额度用完或请求过快），稍后再试或换 Key。");
+                        }
+                        else if (request.responseCode >= 500)
+                        {
+                            result.errorKind = "server";
+                            msg.Append("\n\n5xx = 服务端出错，不是本地配置的问题，稍后重试。");
+                        }
+                        else
+                        {
+                            result.errorKind = "network";
+                        }
                         msg.Append("\n\n服务端响应：").Append(Head(text, 400));
-                        done(false, msg.ToString());
+                        result.message = msg.ToString();
                         return;
                     }
 
                     var dict = MiniJson.ParseObjectSafe(text);
                     string model = dict == null ? "" : MiniJson.Str(dict, "model", "");
-                    done(true, string.IsNullOrEmpty(model)
+                    result.serverModel = model;
+                    result.ok = true;
+                    result.message = string.IsNullOrEmpty(model)
                         ? "连接成功（响应可解析，服务端未回传 model 字段）"
-                        : "连接成功，服务端回传模型：" + model);
+                        : "连接成功，服务端回传模型：" + model;
                 }
                 finally
                 {
                     try { request.Dispose(); } catch { }
+                    done(result);
                 }
             };
 

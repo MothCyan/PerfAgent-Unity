@@ -60,7 +60,12 @@ namespace PerfAgent.UI
         Toggle _localOnly;
         Toggle _allowSource;
         Toggle _allowPaths;
-        Button _testButton;
+        Button _checkButton;
+        Label _checkSummary;
+        Label _checkEndpointRow;
+        Label _checkKeyRow;
+        Label _checkModelRow;
+        Label _checkNetworkRow;
         Label _keyPresence;
         Label _endpointHint;
 
@@ -81,64 +86,83 @@ namespace PerfAgent.UI
             if (handler != null) handler();
         }
 
+        /// <summary>供外部（主面板的「启用 AI」开关）在改动配置后通知监听者。</summary>
+        public static void NotifyExternalChange()
+        {
+            NotifyChanged();
+        }
+
         public void CreateGUI()
         {
             var root = rootVisualElement;
-            root.style.paddingLeft = 10;
-            root.style.paddingRight = 10;
-            root.style.paddingTop = 8;
-            root.style.paddingBottom = 8;
+            root.style.flexDirection = FlexDirection.Column;
+            root.style.backgroundColor = Theme.WindowBg;
+            Theme.Pad(root, 10, 10, 8, 8);
 
-            root.Add(Section("服务商预设（只是省打字，能否用通请用「测试连接」确认）"));
+            var cfg = PerfAgentSettings.Config;
+
+            // ---- 顶部：标题 + 状态胶囊 ----
+            var header = Theme.Header("LLM 配置",
+                "只有「对话追问」会用到这里；规则引擎的结论不依赖任何外部服务，没配也能用");
+            _status = Theme.Pill("就绪", Theme.TextDim);
+            header.Add(_status);
+            root.Add(header);
+            root.Add(Theme.Divider());
+
+            var scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.style.flexGrow = 1;
+            root.Add(scroll);
+
+            // ---- 服务商预设 ----
+            var presetCard = Theme.Card("服务商预设", "只是省打字，能不能用通点下面的「开始校验」");
             var presetRow = new VisualElement();
             presetRow.style.flexDirection = FlexDirection.Row;
             presetRow.style.flexWrap = Wrap.Wrap;
             for (int i = 0; i < Presets.Length; i++)
             {
                 var preset = Presets[i];
-                var button = new Button(delegate { ApplyPreset(preset); });
-                button.text = preset.label;
+                var button = Theme.Secondary(preset.label, delegate { ApplyPreset(preset); });
                 button.tooltip = preset.hint;
-                button.style.marginRight = 4;
-                button.style.marginBottom = 4;
                 presetRow.Add(button);
             }
-            root.Add(presetRow);
+            presetCard.Add(presetRow);
+            scroll.Add(presetCard);
 
-            var cfg = PerfAgentSettings.Config;
+            // ---- 连接 ----
+            var connCard = Theme.Card("连接");
 
-            root.Add(Section("连接"));
             _endpoint = new TextField("Endpoint");
             _endpoint.value = cfg.endpoint;
-            _endpoint.style.marginBottom = 2;
+            _endpoint.style.fontSize = Theme.SizeSmall;
             _endpoint.RegisterValueChangedCallback(delegate (ChangeEvent<string> e)
             {
                 cfg.endpoint = e.newValue;
                 RefreshEndpointHint();
             });
-            root.Add(_endpoint);
+            connCard.Add(_endpoint);
 
             // 把实际要请求的 URL 显示出来：用户只填域名时能一眼看到补全结果
-            _endpointHint = new Label();
-            _endpointHint.style.fontSize = 10;
-            _endpointHint.style.marginBottom = 6;
-            root.Add(_endpointHint);
+            _endpointHint = Theme.Hint("");
+            connCard.Add(_endpointHint);
 
             _model = new TextField("模型");
             _model.value = cfg.model;
-            _model.style.marginBottom = 2;
+            _model.style.fontSize = Theme.SizeSmall;
+            _model.style.marginTop = 4;
             _model.RegisterValueChangedCallback(delegate (ChangeEvent<string> e) { cfg.model = e.newValue; });
-            root.Add(_model);
+            connCard.Add(_model);
 
             var keyRow = new VisualElement();
             keyRow.style.flexDirection = FlexDirection.Row;
             keyRow.style.alignItems = Align.Center;
+            keyRow.style.marginTop = 4;
 
             _key = new TextField("API Key");
             // 只回显本机存的那个：环境变量里的 Key 不应该被显示到界面上
             _key.value = cfg.StoredApiKey;
             _key.isPasswordField = true;
             _key.style.flexGrow = 1;
+            _key.style.fontSize = Theme.SizeSmall;
             _key.RegisterValueChangedCallback(delegate (ChangeEvent<string> e)
             {
                 cfg.ApiKey = e.newValue;
@@ -149,117 +173,144 @@ namespace PerfAgent.UI
 
             _showKey = new Toggle("显示明文");
             _showKey.value = false;
-            _showKey.style.width = 90;
+            _showKey.style.width = 86;
+            _showKey.style.marginLeft = 6;
+            _showKey.style.fontSize = Theme.SizeSmall;
             _showKey.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e)
             {
                 if (_key != null) _key.isPasswordField = !e.newValue;
             });
             keyRow.Add(_showKey);
-            root.Add(keyRow);
+            connCard.Add(keyRow);
 
-            _keySource = new Label();
-            _keySource.style.fontSize = 11;
-            _keySource.style.whiteSpace = WhiteSpace.Normal;
-            _keySource.style.marginBottom = 2;
-            root.Add(_keySource);
+            _keySource = Theme.Hint("");
+            connCard.Add(_keySource);
 
             _keyPresence = new Label();
-            _keyPresence.style.fontSize = 11;
+            _keyPresence.style.fontSize = Theme.SizeSmall;
             _keyPresence.style.whiteSpace = WhiteSpace.Normal;
-            root.Add(_keyPresence);
+            connCard.Add(_keyPresence);
 
-            root.Add(Section("参数"));
+            connCard.Add(Theme.Hint("安全：Key 只写本机 EditorPrefs（不进工程目录）；"
+                + "当前的保护实现是「" + SecretProtection.Describe() + "」。"));
+            scroll.Add(connCard);
+
+            // ---- 连通性校验 ----
+            var checkCard = Theme.Card("连通性校验", "只发一个固定字符串 \"ping\"，不带 tools / 快照 / 任何工程信息");
+            var checkActions = new VisualElement();
+            checkActions.style.flexDirection = FlexDirection.Row;
+            checkActions.style.alignItems = Align.Center;
+
+            _checkButton = Theme.Primary("开始校验", RunConnectivityCheck);
+            _checkButton.style.marginBottom = 0;
+            checkActions.Add(_checkButton);
+
+            _checkSummary = Theme.Hint("还没校验过。");
+            _checkSummary.style.marginTop = 0;
+            _checkSummary.style.marginLeft = 8;
+            _checkSummary.style.flexGrow = 1;
+            _checkSummary.style.flexShrink = 1;
+            checkActions.Add(_checkSummary);
+            checkCard.Add(checkActions);
+
+            checkCard.Add(Theme.Divider());
+
+            _checkEndpointRow = CheckRow();
+            _checkKeyRow = CheckRow();
+            _checkModelRow = CheckRow();
+            _checkNetworkRow = CheckRow();
+            checkCard.Add(_checkEndpointRow);
+            checkCard.Add(_checkKeyRow);
+            checkCard.Add(_checkModelRow);
+            checkCard.Add(_checkNetworkRow);
+            scroll.Add(checkCard);
+
+            // ---- 参数 ----
+            var paramCard = Theme.Card("参数", "影响成本与回答风格");
+
             _temperature = new Slider("Temperature", 0f, 1f);
             _temperature.value = cfg.temperature;
             _temperature.showInputField = true;
+            _temperature.style.fontSize = Theme.SizeSmall;
             _temperature.RegisterValueChangedCallback(delegate (ChangeEvent<float> e) { cfg.temperature = e.newValue; });
-            root.Add(_temperature);
+            paramCard.Add(_temperature);
 
-            var paramRow = new VisualElement();
-            paramRow.style.flexDirection = FlexDirection.Row;
-
-            _maxSteps = new IntegerField("工具最大轮数");
+            _maxSteps = new IntegerField();
             _maxSteps.value = cfg.maxSteps;
-            _maxSteps.style.flexGrow = 1;
+            _maxSteps.style.fontSize = Theme.SizeSmall;
             _maxSteps.RegisterValueChangedCallback(delegate (ChangeEvent<int> e) { cfg.maxSteps = Mathf.Clamp(e.newValue, 1, 20); });
-            paramRow.Add(_maxSteps);
+            paramCard.Add(Theme.FormRow("工具最大轮数", _maxSteps));
 
-            _maxTokens = new IntegerField("最大输出 tokens");
+            _maxTokens = new IntegerField();
             _maxTokens.value = cfg.maxOutputTokens;
-            _maxTokens.style.flexGrow = 1;
-            _maxTokens.style.marginLeft = 8;
+            _maxTokens.style.fontSize = Theme.SizeSmall;
             _maxTokens.RegisterValueChangedCallback(delegate (ChangeEvent<int> e) { cfg.maxOutputTokens = Mathf.Max(64, e.newValue); });
-            paramRow.Add(_maxTokens);
-            root.Add(paramRow);
+            paramCard.Add(Theme.FormRow("最大输出 tokens", _maxTokens));
+            scroll.Add(paramCard);
 
-            root.Add(Section("隐私"));
+            // ---- 隐私 ----
+            var privacyCard = Theme.Card("隐私", "三个开关都是「关掉更安全」的方向");
             _localOnly = new Toggle("纯本地模式（完全不调用外部服务）");
             _localOnly.value = cfg.localOnlyNoLlm;
-            _localOnly.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { cfg.localOnlyNoLlm = e.newValue; RefreshKeyState(); NotifyChanged(); });
-            root.Add(_localOnly);
+            _localOnly.style.fontSize = Theme.SizeSmall;
+            _localOnly.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e)
+            {
+                cfg.localOnlyNoLlm = e.newValue;
+                RefreshKeyState();
+                NotifyChanged();
+            });
+            privacyCard.Add(_localOnly);
 
             _allowSource = new Toggle("允许上传代码片段");
             _allowSource.value = cfg.allowSourceCodeUpload;
+            _allowSource.style.fontSize = Theme.SizeSmall;
             _allowSource.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { cfg.allowSourceCodeUpload = e.newValue; });
-            root.Add(_allowSource);
+            privacyCard.Add(_allowSource);
 
             _allowPaths = new Toggle("允许上传资源路径");
             _allowPaths.value = cfg.allowAssetPathUpload;
+            _allowPaths.style.fontSize = Theme.SizeSmall;
             _allowPaths.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { cfg.allowAssetPathUpload = e.newValue; });
-            root.Add(_allowPaths);
+            privacyCard.Add(_allowPaths);
 
-            var privacyNote = new Label("关闭「允许上传代码片段」后，Agent 只能看到反模式名称与文件:行号，看不到源码内容。");
-            privacyNote.style.fontSize = 11;
-            privacyNote.style.whiteSpace = WhiteSpace.Normal;
-            privacyNote.style.color = Dim();
-            root.Add(privacyNote);
+            privacyCard.Add(Theme.Hint("关闭「允许上传代码片段」后，Agent 只能看到反模式名称与文件:行号，看不到源码内容。"));
+            scroll.Add(privacyCard);
 
-            root.Add(Section("操作"));
+            // ---- 操作 ----
+            var actionCard = Theme.Card("操作");
             var actions = new VisualElement();
             actions.style.flexDirection = FlexDirection.Row;
             actions.style.flexWrap = Wrap.Wrap;
 
-            _testButton = new Button(TestConnection);
-            _testButton.text = "测试连接";
-            _testButton.style.marginRight = 6;
-            actions.Add(_testButton);
-
-            var save = new Button(delegate
+            actions.Add(Theme.Primary("保存", delegate
             {
                 PerfAgentSettings.Config.Save();
                 NotifyChanged();
-                SetStatus("已保存。当前：" + PerfAgentSettings.Config.Describe(), Ok());
-            });
-            save.text = "保存";
-            save.style.marginRight = 6;
-            actions.Add(save);
+                SetStatus("已保存 · " + PerfAgentSettings.Config.Describe(), Theme.Good);
+            }));
+            actions.Add(Theme.Secondary("打开 Project Settings", delegate { SettingsService.OpenProjectSettings("Project/PerfAgent"); }));
+            actions.Add(Theme.Ghost("API 探针", delegate { PerfApiProbeWindow.Open(); }));
+            actionCard.Add(actions);
+            actionCard.Add(Theme.Hint("· API Key 只写在本机 EditorPrefs，不进工程目录，不会被提交。\n"
+                + "· 也可用环境变量 PERF_AGENT_API_KEY，优先级更高（设置后上面输入框的值会被忽略）。\n"
+                + "· 校验只发送固定字符串 \"ping\"，不带 tools、不带快照、不带任何工程信息。"));
+            scroll.Add(actionCard);
 
-            var settings = new Button(delegate { SettingsService.OpenProjectSettings("Project/PerfAgent"); });
-            settings.text = "打开 Project Settings";
-            settings.style.marginRight = 6;
-            actions.Add(settings);
+            RefreshEndpointHint();
+            RefreshKeyState();
+        }
 
-            var probe = new Button(delegate { PerfApiProbeWindow.Open(); });
-            probe.text = "API 探针";
-            actions.Add(probe);
-
-            root.Add(actions);
-
-            _status = new Label("就绪");
-            _status.style.whiteSpace = WhiteSpace.Normal;
-            _status.style.marginTop = 6;
-            root.Add(_status);
-
-            var note = new Label(
-                "· API Key 只写在本机 EditorPrefs，不进工程目录，不会被提交。\n" +
-                "· 也可用环境变量 PERF_AGENT_API_KEY，优先级更高（设置后下面输入框的值会被忽略）。\n" +
-                "· 「测试连接」只发送固定字符串 \"ping\"，不带 tools、不带快照、不带任何工程信息。");
-            note.style.fontSize = 11;
-            note.style.whiteSpace = WhiteSpace.Normal;
-            note.style.color = Dim();
-            note.style.marginTop = 8;
-            root.Add(note);
-
+        /// <summary>
+        /// 窗口重新获得焦点时把控件同步回配置。
+        /// 主面板顶部也有一个「启用 AI」开关，改的是同一份配置 —— 不同步的话这里显示的就是旧状态。
+        /// </summary>
+        void OnFocus()
+        {
+            var cfg = PerfAgentSettings.Config;
+            if (_localOnly != null) _localOnly.SetValueWithoutNotify(cfg.localOnlyNoLlm);
+            if (_endpoint != null) _endpoint.SetValueWithoutNotify(cfg.endpoint);
+            if (_model != null) _model.SetValueWithoutNotify(cfg.model);
+            RefreshEndpointHint();
             RefreshKeyState();
         }
 
@@ -280,7 +331,7 @@ namespace PerfAgent.UI
             if (_model != null) _model.value = preset.model;
 
             NotifyChanged();
-            SetStatus("已填入 " + preset.label + " 的 Endpoint 与模型（" + preset.hint + "）。填好 API Key 后点「测试连接」。", Dim());
+            SetStatus("已填入 " + preset.label + " 的 Endpoint 与模型（" + preset.hint + "）。填好 API Key 后点上面的「开始校验」。", Dim());
             RefreshKeyState();
         }
 
@@ -339,15 +390,102 @@ namespace PerfAgent.UI
             }
         }
 
-        void TestConnection()
+        static Label CheckRow()
         {
-            if (_testButton != null) _testButton.SetEnabled(false);
-            SetStatus("正在测试连接（只发一个 \"ping\"，不带任何工程数据）…", Dim());
+            var l = new Label("• 未校验");
+            l.style.fontSize = Theme.SizeSmall;
+            l.style.color = Theme.TextFaint;
+            l.style.whiteSpace = WhiteSpace.Normal;
+            l.style.marginBottom = 2;
+            return l;
+        }
 
-            LlmClient.Ping(delegate (bool ok, string message)
+        /// <summary>0 = 未校验，1 = 通过，2 = 失败。</summary>
+        static void SetCheck(Label row, int state, string text)
+        {
+            if (row == null) return;
+            row.text = (state == 1 ? "✓ " : state == 2 ? "✗ " : "• ") + text;
+            row.style.color = state == 1 ? Theme.Good : state == 2 ? Theme.Bad : Theme.TextFaint;
+        }
+
+        /// <summary>把失败归类翻译成人话 —— 只报一个 HTTP 码对排查没帮助。</summary>
+        static string Kind(string kind)
+        {
+            switch (kind)
             {
-                if (_testButton != null) _testButton.SetEnabled(true);
-                SetStatus((ok ? "✓ " : "✗ ") + message, ok ? Ok() : Warn());
+                case "endpoint": return "Endpoint 配置";
+                case "key": return "缺少 API Key";
+                case "model": return "模型名配置";
+                case "busy": return "已有请求在进行";
+                case "timeout": return "超时";
+                case "auth": return "鉴权失败";
+                case "notfound": return "路径不存在";
+                case "request": return "请求被拒";
+                case "server": return "服务端错误";
+                case "network": return "网络不可达";
+                default: return "未知原因";
+            }
+        }
+
+        /// <summary>
+        /// 连通性校验：前四项里前三项本地就能判定（不花网络请求），最后一项才真的发一次 ping。
+        /// 逐项显示的意义是「卡在哪一步一目了然」—— 以前只有一句「连接成功/失败」，
+        /// 失败时用户不知道是路径错、Key 错还是模型名错。
+        /// </summary>
+        void RunConnectivityCheck()
+        {
+            var cfg = PerfAgentSettings.Config;
+
+            string effective = LlmClient.NormalizeEndpoint(cfg.endpoint);
+            bool endpointOk = !string.IsNullOrEmpty(cfg.endpoint) && !string.IsNullOrEmpty(effective);
+            SetCheck(_checkEndpointRow, endpointOk ? 1 : 2, endpointOk
+                ? ("Endpoint 解析为 " + effective)
+                : "Endpoint 未填写或无法解析");
+
+            bool local = LlmClient.IsLocalEndpoint(cfg.endpoint);
+            bool keyOk = cfg.HasApiKey || local;
+            SetCheck(_checkKeyRow, keyOk ? 1 : 2, cfg.HasApiKey
+                ? ("API Key 已就绪（来源：" + cfg.ApiKeySource + "）")
+                : (local ? "Endpoint 指向本机服务，不需要 API Key" : "未配置 API Key"));
+
+            bool modelOk = !string.IsNullOrEmpty(cfg.model);
+            SetCheck(_checkModelRow, modelOk ? 1 : 2, modelOk ? ("模型名：" + cfg.model) : "未填写模型名");
+
+            if (cfg.localOnlyNoLlm)
+            {
+                SetCheck(_checkNetworkRow, 0, "当前是「纯本地模式」，不会发起网络请求；要校验连通性先关掉它。");
+                _checkSummary.text = "纯本地模式下没有可校验的连接。";
+                _checkSummary.style.color = Theme.TextDim;
+                return;
+            }
+
+            if (!endpointOk || !keyOk || !modelOk)
+            {
+                SetCheck(_checkNetworkRow, 2, "上面有没过的项，先补齐再校验网络。");
+                _checkSummary.text = "配置不完整，未发起请求。";
+                _checkSummary.style.color = Theme.Bad;
+                return;
+            }
+
+            if (_checkButton != null) _checkButton.SetEnabled(false);
+            SetCheck(_checkNetworkRow, 0, "正在请求…");
+            _checkSummary.text = "校验中…";
+            _checkSummary.style.color = Theme.TextDim;
+
+            LlmClient.PingEx(delegate (LlmClient.PingResult r)
+            {
+                if (_checkButton != null) _checkButton.SetEnabled(true);
+
+                SetCheck(_checkNetworkRow, r.ok ? 1 : 2, r.ok
+                    ? ("服务端可达（HTTP " + r.httpCode + "，" + r.elapsedMs.ToString("0") + " ms）"
+                       + (string.IsNullOrEmpty(r.serverModel) ? "" : "，回传模型 " + r.serverModel))
+                    : ("请求失败（" + Kind(r.errorKind) + "，" + r.elapsedMs.ToString("0") + " ms）\n" + r.message));
+
+                _checkSummary.text = (r.ok ? "✓ 连通正常" : "✗ " + Kind(r.errorKind))
+                    + "　·　" + DateTime.Now.ToString("HH:mm:ss")
+                    + "　·　" + r.elapsedMs.ToString("0") + " ms"
+                    + (string.IsNullOrEmpty(r.effectiveUrl) ? "" : "　·　" + r.effectiveUrl);
+                _checkSummary.style.color = r.ok ? Theme.Good : Theme.Bad;
             });
         }
 
@@ -355,23 +493,13 @@ namespace PerfAgent.UI
         {
             if (_status == null) return;
             _status.text = text;
-            _status.style.color = color;
-            _status.style.whiteSpace = WhiteSpace.Normal;
+            // 胶囊的底色是按文字色算出来的，所以只能走 TintPill —— 否则出现绿字红底
+            Theme.TintPill(_status, color);
         }
 
-        static Label Section(string text)
-        {
-            var label = new Label(text);
-            label.style.unityFontStyleAndWeight = FontStyle.Bold;
-            label.style.marginTop = 10;
-            label.style.marginBottom = 3;
-            label.style.color = new Color(0.62f, 0.72f, 0.9f);
-            label.style.whiteSpace = WhiteSpace.Normal;
-            return label;
-        }
-
-        static Color Ok() { return new Color(0.55f, 0.87f, 0.62f); }
-        static Color Warn() { return new Color(1f, 0.83f, 0.48f); }
-        static Color Dim() { return new Color(0.62f, 0.66f, 0.72f); }
+        static Color Ok() { return Theme.Good; }
+        static Color Warn() { return Theme.Warn; }
+        static Color Dim() { return Theme.TextDim; }
+        static Color Bad() { return Theme.Bad; }
     }
 }

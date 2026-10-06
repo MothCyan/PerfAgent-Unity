@@ -16,8 +16,10 @@ namespace PerfAgent.UI
     {
         const string MenuRoot = "Tools/PerfAgent/";
 
-        // 布局
+        /// <summary>布局 */
         Label _status;
+        /// <summary>主面板上的「启用 AI」开关（与配置窗口的「纯本地模式」是同一个开关的两面）。</summary>
+        Toggle _aiToggle;
         VisualElement _liveHost;
         VisualElement[] _liveBars;
         Label _liveLabel;
@@ -187,7 +189,16 @@ namespace PerfAgent.UI
 
             // ---- 顶部：标题 + LLM 状态 + 工具条 ----
             var header = Theme.Header("性能诊断", "跟随采集 → 实时波形 → 结论与修复计划；改工程前一律要你点确认");
-            _llmStatus = Theme.Pill("LLM：检查中…", Theme.TextDim);
+
+            _aiToggle = new Toggle("启用 AI");
+            _aiToggle.style.marginRight = 8;
+            _aiToggle.style.fontSize = Theme.SizeSmall;
+            _aiToggle.tooltip = "开 = 允许把工具结论交给 LLM 做对话追问；关 = 纯本地模式（不外传任何数据）。\n"
+                + "规则引擎的结论、证据链与修复计划不受这个开关影响。";
+            _aiToggle.RegisterValueChangedCallback(delegate (ChangeEvent<bool> e) { SetAiEnabled(e.newValue); });
+            header.Add(_aiToggle);
+
+            _llmStatus = Theme.Pill("AI：检查中…", Theme.TextDim);
             header.Add(_llmStatus);
             header.Add(Theme.Ghost("LLM 配置", PerfAgentSettingsWindow.Open));
             root.Add(header);
@@ -274,23 +285,64 @@ namespace PerfAgent.UI
             if (_llmStatus == null) return;
 
             var cfg = PerfAgentSettings.Config;
+
+            // 配置窗口里改过「纯本地模式」时，这里的开关也要跟着走（同一个字段的两面）
+            if (_aiToggle != null) _aiToggle.SetValueWithoutNotify(!cfg.localOnlyNoLlm);
+
             if (cfg.localOnlyNoLlm)
             {
-                _llmStatus.text = "LLM：纯本地模式（不外传任何数据）";
+                _llmStatus.text = "AI：已关闭（纯本地）";
                 Theme.TintPill(_llmStatus, Theme.TextDim);
             }
             else if (!cfg.HasApiKey && !LlmClient.IsLocalEndpoint(cfg.endpoint))
             {
-                _llmStatus.text = "LLM：未配置 Key（会用本地规则引擎回答）";
+                _llmStatus.text = "AI：已启用 · 缺 Key（回答走规则引擎）";
                 Theme.TintPill(_llmStatus, Theme.Warn);
             }
             else
             {
                 string source = cfg.ApiKeySource;
-                _llmStatus.text = "LLM：" + cfg.model
+                _llmStatus.text = "AI：" + cfg.model
                     + (string.IsNullOrEmpty(source) ? "" : "（Key 来源：" + source + "）");
                 Theme.TintPill(_llmStatus, Theme.Good);
             }
+        }
+
+        /// <summary>
+        /// 主面板的「启用 AI」开关。
+        ///
+        /// 改的就是配置里的 `localOnlyNoLlm` —— 与配置窗口同一个字段，所以两边永远是同一个状态，
+        /// 不会出现「面板说开了、配置窗口说是纯本地」。打开时顺手校验一次连通性：
+        /// 否则用户开了开关却发现回答还是规则引擎，会以为坏了（其实只是 Key / 网络不通）。
+        /// </summary>
+        void SetAiEnabled(bool on)
+        {
+            var cfg = PerfAgentSettings.Config;
+            cfg.localOnlyNoLlm = !on;
+            cfg.Save();
+            PerfAgentSettingsWindow.NotifyExternalChange();
+            RefreshLlmStatus();
+
+            if (!on)
+            {
+                SetStatus("已关闭 AI：纯本地模式，不会调用任何外部服务；规则引擎的结论照常产出。");
+                return;
+            }
+
+            if (!cfg.HasApiKey && !LlmClient.IsLocalEndpoint(cfg.endpoint))
+            {
+                SetStatus("AI 已启用，但还没配置 API Key —— 追问仍会走本地规则引擎。点右上「LLM 配置」填 Key，或先做一次连通性校验。");
+                return;
+            }
+
+            SetStatus("AI 已启用，正在校验连通性（只发一个 \"ping\"，不带任何工程数据）…");
+            LlmClient.PingEx(delegate (LlmClient.PingResult r)
+            {
+                SetStatus(r.ok
+                    ? ("AI 已启用 · 连通正常（" + r.elapsedMs.ToString("0") + " ms"
+                       + (string.IsNullOrEmpty(r.serverModel) ? "" : "，模型 " + r.serverModel) + "）")
+                    : ("AI 已启用，但连通校验失败（" + r.errorKind + "）：点「LLM 配置」看逐项结果。"));
+            });
         }
 
         /// <summary>
