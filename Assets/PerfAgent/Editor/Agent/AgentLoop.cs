@@ -288,11 +288,15 @@ namespace PerfAgent.Agent
             sb.Append("\n本次：推理内容 ").Append(LlmClient.LastReasoningLength).Append(" 字，正文 0 字；")
               .Append("当前「最大输出 tokens」= ").Append(cfg.maxOutputTokens).Append("。");
             sb.Append("\n\n建议：")
-              .Append("① 在「LLM 配置」把最大输出 tokens 调到 4096 以上")
+              .Append("① 在面板右上角「LLM 配置」里把最大输出 tokens 调到 4096 以上")
               .Append(truncated ? "，给它留出写正文的余地" : "")
               .Append("；② 或换成普通的对话模型（deepseek-chat / gpt-4o-mini 这类），")
               .Append("推理型模型与本工具的工具调用流程合不来。");
-            sb.Append("\n\n（完整的思考内容已打到 Console，没有占用对话区。）");
+            // 用户点「复制」时最怕的是「剪贴板空的、也没人告诉我为什么」——
+            // 这里直接说清：AI 没正文不影响本地结论，换个按钮照样有东西可贴。
+            sb.Append("\n\n（这次没有 AI 正文，但**本地报告不受影响**：点「复制结论」拿到的是规则引擎的完整报告，"
+                    + "不需要模型；「复制修复建议」在没拿到 AI 正文时会自动退回本地清单。）");
+            sb.Append("\n（完整的思考内容已打到 Console，没有占用对话区。）");
             return sb.ToString();
         }
 

@@ -1173,22 +1173,71 @@ namespace PerfAgent.UI
             var snap = PerfSession.Current;
             if (snap == null)
             {
+                AppendTranscript("\n⚠ **没有可复制的内容**：还没有快照 —— 先点「跟随采集」跑一段，"
+                               + "或从左上列表载入历史快照。\n");
                 SetStatus("没有快照可复制：先点「跟随采集」跑一段，或从左上列表载入历史快照。");
                 return;
             }
 
-            string md = PerfReportExporter.ToMarkdown(snap);
-            EditorGUIUtility.systemCopyBuffer = md;
-            SetStatus("已复制 Markdown 报告（" + md.Length + " 字符）：环境 / 指标 / 结论 / 修复计划都在里面。");
+            string md;
+            try
+            {
+                md = PerfReportExporter.ToMarkdown(snap);
+            }
+            catch (Exception e)
+            {
+                // 报告生成抛异常时绝不能静默：用户点了复制、剪贴板却没变，只会以为工具坏了。
+                Debug.LogWarning("[PerfAgent] 生成 Markdown 报告失败：" + e);
+                AppendTranscript("\n⚠ **复制失败**：报告生成抛异常（" + e.GetType().Name + "）："
+                               + e.Message + "。堆栈在 Console。\n");
+                SetStatus("报告生成失败（" + e.GetType().Name + "）：" + e.Message + "。看 Console 里的堆栈。");
+                return;
+            }
+
+            CopyToClipboard(md, "Markdown 报告（环境 / 指标 / 结论 / 修复计划）");
+        }
+
+        /// <summary>
+        /// **所有「复制」都走这里**：先回读剪贴板确认真的写进去了，并且把结果同时写到
+        /// 状态栏与对话区。
+        ///
+        /// 为什么非要回读、非要留一句话（实测反馈：「点「复制结论」没被复制」）：
+        /// 复制本身是静默的 —— 内容为空、或生成报告抛异常时，用户看到的就是「什么都没发生」，
+        /// 连该不该再点一次都不知道。现在无论成还是没成，都会有一行字说明原因与字数。
+        /// </summary>
+        void CopyToClipboard(string text, string what)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                string empty = CopyFeedback.Describe(what, 0, false);
+                AppendTranscript("\n⚠ **" + empty + "**\n");
+                SetStatus(empty);
+                return;
+            }
+
+            try
+            {
+                EditorGUIUtility.systemCopyBuffer = text;
+
+                // 写完立刻读回来对一下字符数：这是能确认「真的进剪贴板了」的唯一手段。
+                bool verified = CopyFeedback.Verified(text, EditorGUIUtility.systemCopyBuffer);
+                string message = CopyFeedback.Describe(what, text.Length, verified);
+
+                AppendTranscript("\n**" + message + "** Ctrl+V 即可粘贴。\n");
+                SetStatus(message);
+            }
+            catch (Exception e)
+            {
+                AppendTranscript("\n⚠ **复制失败**（" + what + "）：" + e.Message + "\n");
+                SetStatus("复制失败（" + what + "）：" + e.Message);
+            }
         }
 
         /// <summary>把整个对话（用户问题 + 本地结论 + AI 回答）复制成 Markdown。</summary>
         void CopyConversation()
         {
             string text = _transcriptRaw == null ? "" : _transcriptRaw.ToString();
-            if (string.IsNullOrEmpty(text)) { SetStatus("对话还是空的。"); return; }
-            EditorGUIUtility.systemCopyBuffer = text;
-            SetStatus("已复制对话（" + text.Length + " 字符）。");
+            CopyToClipboard(text, "对话记录");
         }
 
         /// <summary>
@@ -1208,7 +1257,9 @@ namespace PerfAgent.UI
             if (cfg.localOnlyNoLlm || !cfg.HasApiKey)
             {
                 string local = FixSuggestionBrief.LocalChecklist(snap);
-                EditorGUIUtility.systemCopyBuffer = local;
+                CopyToClipboard(local, snap.codeIssues.Count == 0
+                    ? "本地清单（扫描没发现代码反模式，附上了相关结论）"
+                    : ("本地修复清单（" + snap.codeIssues.Count + " 处，来自规则扫描，不含具体改法）"));
                 SetStatus(snap.codeIssues.Count == 0
                     ? "已复制本地清单（扫描没发现代码反模式，附上了相关结论）。"
                     : ("已复制本地修复清单（" + snap.codeIssues.Count + " 处，来自规则扫描，不含具体改法）。"
@@ -1240,12 +1291,14 @@ namespace PerfAgent.UI
                 delegate (string text)
                 {
                     if (_sendButton != null) SetSending(false);
-                    if (string.IsNullOrEmpty(text)) { SetStatus("AI 没返回内容（看看 Console 或 LLM 配置）。"); return; }
-                    EditorGUIUtility.systemCopyBuffer = text;
+                    if (string.IsNullOrEmpty(text))
+                    {
+                        SetStatus("AI 没返回正文（看 Console 或 LLM 配置）。");
+                        return;
+                    }
                     // 不再把模型原文倒进对话区：它带 `#` 标题与 ``` 代码块，
                     // 而对话记录是一个 Label（只认 `**粗体**`），直接贴过来就是一堵原始 Markdown。
-                    AppendTranscript("\n**AI 修复清单**：已复制到剪贴板（" + text.Length
-                                   + " 字）—— 直接粘到编辑器/issue 里逐条改；要看全文就 Ctrl+V。\n");
+                    CopyToClipboard(text, "AI 修复清单（建议，不是审计结果）");
                     SetStatus("已复制 AI 修复清单（" + text.Length + " 字符）。先看一遍再改 —— 这是建议，不是审计结果。");
                     SaveConversation();
                 },
@@ -1254,6 +1307,12 @@ namespace PerfAgent.UI
                     if (_sendButton != null) SetSending(false);
                     AppendTranscript("\n⚠ " + error + "\n");
                     SetStatus("AI 生成失败：" + error);
+
+                    // 这次没拿到正文，但这个按钮的意义就是「给我能贴走的东西」——
+                    // 留一个空剪贴板是最差的结果（实测反馈：点完复制以为复制坏了）。
+                    // 所以退回本地清单，并明说给的是本地事实、不是 AI 建议。
+                    CopyToClipboard(FixSuggestionBrief.LocalChecklist(snap),
+                        "AI 没给正文，改为复制本地清单（规则扫描的事实，不含具体改法）");
                 },
                 brief);
         }

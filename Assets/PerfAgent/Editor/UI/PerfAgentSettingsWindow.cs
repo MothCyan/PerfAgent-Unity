@@ -57,6 +57,9 @@ namespace PerfAgent.UI
         Slider _temperature;
         IntegerField _maxSteps;
         IntegerField _maxTokens;
+
+        /// <summary>「最大输出 tokens」现场诊断与一键修好的容器（推理型模型把预算吃完时正文一个字都没有）。</summary>
+        VisualElement _maxTokensHintHost;
         Toggle _localOnly;
         Toggle _allowSource;
         Toggle _allowPaths;
@@ -90,6 +93,47 @@ namespace PerfAgent.UI
         public static void NotifyExternalChange()
         {
             NotifyChanged();
+        }
+
+        /// <summary>
+        /// 「最大输出 tokens」的现场诊断 + 一键修好。
+        ///
+        /// 为什么要做成诊断而不是一句「建议调大」：推理型模型把输出预算先花在 reasoning_content 上，
+        /// 值太小时正文一个字都轮不到（实测反馈：推理 5479 字、正文 0 字、finish_reason=length，
+        /// 当时这个值是 1500）—— 而**旧工程的设置是持久化的**，
+        /// 光改代码里的默认值（已提到 4096）救不了他，得在这里当场把值改掉并保存。
+        /// </summary>
+        void RefreshMaxTokensHint(PerfAgentSettings cfg)
+        {
+            if (_maxTokensHintHost == null || cfg == null) return;
+            _maxTokensHintHost.Clear();
+
+            int value = cfg.maxOutputTokens;
+            bool fine = value >= 4096;
+
+            var label = new Label(fine
+                ? ("当前 " + value + "：够推理型模型先写完推理、再写正文。")
+                : ("当前 " + value + " 偏小：推理型模型（如 deepseek-reasoner）会把预算先花在推理上，"
+                   + "正文可能一个字都轮不到 —— 表现是「推理几千字、正文 0 字，finish_reason=length」。建议 ≥4096。"));
+            label.style.fontSize = Theme.SizeSmall;
+            label.style.color = fine ? Theme.TextDim : Theme.Warn;
+            label.style.whiteSpace = WhiteSpace.Normal;
+            label.style.marginBottom = 4;
+            _maxTokensHintHost.Add(label);
+
+            if (fine) return;
+
+            var fix = Theme.Ghost("设为 4096", delegate
+            {
+                cfg.maxOutputTokens = 4096;
+                cfg.Save();
+                if (_maxTokens != null) _maxTokens.value = 4096;
+                RefreshMaxTokensHint(cfg);
+                NotifyChanged();
+                SetStatus("已把「最大输出 tokens」设为 4096 并保存：推理型模型就有额度写正文了。", Dim());
+            });
+            fix.tooltip = "把「最大输出 tokens」设成 4096 并保存 —— 给推理型模型留出写正文的额度。";
+            _maxTokensHintHost.Add(fix);
         }
 
         public void CreateGUI()
@@ -244,8 +288,19 @@ namespace PerfAgent.UI
             _maxTokens = new IntegerField();
             _maxTokens.value = cfg.maxOutputTokens;
             _maxTokens.style.fontSize = Theme.SizeSmall;
-            _maxTokens.RegisterValueChangedCallback(delegate (ChangeEvent<int> e) { cfg.maxOutputTokens = Mathf.Max(64, e.newValue); });
+            _maxTokens.RegisterValueChangedCallback(delegate (ChangeEvent<int> e)
+            {
+                cfg.maxOutputTokens = Mathf.Max(64, e.newValue);
+                RefreshMaxTokensHint(cfg);
+            });
             paramCard.Add(Theme.FormRow("最大输出 tokens", _maxTokens));
+
+            // 推理型模型会把预算先花在 reasoning_content 上：值太小时正文一个字都轮不到
+            //（实测反馈：模型把输出预算全用在推理上了，正文 0 字；当时这个值是 1500）。
+            // 旧工程里存的是老默认值，所以这里给一句现场诊断 + 一键修好，而不是让他去猜该填多少。
+            _maxTokensHintHost = new VisualElement();
+            paramCard.Add(_maxTokensHintHost);
+            RefreshMaxTokensHint(cfg);
             scroll.Add(paramCard);
 
             // ---- 隐私 ----
