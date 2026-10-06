@@ -72,6 +72,7 @@ namespace PerfAgent.RuleRegression
             // 本地规则引擎怎么回答提问（纯本地模式的那条路）单独一个文件，便于继续加用例
             LocalAnswerTests.Register(tests);
             FixSuggestionBriefTests.Register(tests);
+            MessageHygieneTests.Register(tests);
 
             var failed = 0;
             foreach (var test in tests)

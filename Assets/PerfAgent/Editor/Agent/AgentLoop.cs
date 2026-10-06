@@ -96,6 +96,7 @@ namespace PerfAgent.Agent
             }
             Step = 0;
             LastAnswer = "";
+            SanitizeHistory();   // 恢复出来的历史可能是旧的坏数据，先体检再谈别的
         }
 
         public void Ask(string userText, Action<string> onDelta, Action<string> onDone, Action<string> onError,
@@ -113,6 +114,29 @@ namespace PerfAgent.Agent
             Busy = true;
             Status("思考中…");
             RunStep(onDelta, onDone, onError);
+        }
+
+        /// <summary>
+        /// 发送前做一次历史体检。
+        ///
+        /// 为什么每次都要做：历史里只要留下一条 content=null 的 assistant 消息，
+        /// **之后每一次**请求都会被服务商 400 拒掉（"content or tool_calls must be set"），
+        /// 而这跟用户当前问什么毫无关系 —— 现象就是「莫名其妙一直报错」。
+        /// 清理是幂等的，干净历史零开销。
+        /// </summary>
+        void SanitizeHistory()
+        {
+            try
+            {
+                int removed = MessageHygiene.Clean(_messages);
+                if (removed > 0)
+                    UnityEngine.Debug.LogWarning("[PerfAgent] 对话历史里有 " + removed
+                        + " 条无效消息（空 assistant / 孤儿 tool 结果 / 半截工具回合），已清理后再发送。");
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning("[PerfAgent] 历史体检失败（不影响本次请求）：" + e.Message);
+            }
         }
 
         /// <summary>
@@ -134,6 +158,9 @@ namespace PerfAgent.Agent
         void RunStep(Action<string> onDelta, Action<string> onDone, Action<string> onError)
         {
             var cfg = PerfAgentSettings.Config;
+
+            // 每次发送前体检：坏消息（尤其 content=null 的 assistant）会让这次请求直接 400
+            SanitizeHistory();
 
             // 每轮发请求前先折叠较早的工具结果。
             // 每轮都要重发整个历史，不折叠的话输入 token 会按平方级涨。

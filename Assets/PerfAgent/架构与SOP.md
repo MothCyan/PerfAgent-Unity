@@ -429,6 +429,23 @@ Agent 通道（`AgentLoop`）传进来的是 LLM 文本，仍然按整篇校验 
 2. **追加内容后立刻设 `scrollOffset` 会被夹到 0**（此刻内容高度还是旧值），
    表现就是「追加了一段长回答，视图却停在开头」。要再用 `schedule.Execute(...)` 在下一个
    panel tick 里滚一次。
+### 11.9 对话历史体检（一次真事故）
 
+现场：用户提问后报 `HTTP 400 Invalid assistant message: content or tool_calls must be set`，
+而且**之后每一次**都报 —— 跟他问什么都无关。
+
+根因：上一次「模型没返回正文」时，客户端造了一条 `{role:"assistant", content:null}` 的消息
+（既无正文也无 tool_calls）并塞进了历史；历史又被持久化到会话文件，于是重开面板也一样卡死。
+
+三条修正（缺一不可）：
+
+1. **不造坏消息**：`SseHandler.BuildMessage` 在「既无正文也无工具调用」时返回 null，
+   由上层报「返回内容无法解析 + 原始响应开头」；正文为空但拿到 `reasoning_content` 时先当正文用。
+2. **发送前体检**：`Utils/MessageHygiene.Clean` 就地剔掉
+   空 assistant、孤儿 tool 结果、半截工具回合（tool_calls 声明的 id 未被结果补齐的就整组丢）。
+   `AgentLoop.RunStep` 每轮都跑，`RestoreMessages` 恢复历史后也跑；清理幂等、干净历史零开销。
+   为什么要这么狠：一条坏消息会让**整个对话永久卡死**，而用户完全看不出原因。
+3. **回归钉死**：`Tests~/Standalone/MessageHygieneTests.cs`（5 条）盖住上述四种结构，
+   以及「合法历史一条都不能动」。
 一句话分工：**本地给事实与证据（可回溯、不联网），AI 给因果、取舍与人话（联网、由你开）。**
 单纯「有没有超预算 / 数字是多少」这类问题，本地答得更可靠 —— 数字是算出来的，不会被模型改写。

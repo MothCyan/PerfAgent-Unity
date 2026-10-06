@@ -630,28 +630,25 @@ namespace PerfAgent.Agent
                     if (whole != null) Consume(whole);
                 }
 
-                if (_content.Length == 0 && _tools.Count == 0)
-                {
-                    var err = MiniJson.ParseObjectSafe(_raw.ToString());
-                    var errorObj = err == null ? null : MiniJson.AsDict(MiniJson.Get(err, "error"));
-                    if (errorObj != null)
-                        return null;
-                }
-
                 // 诊断信息挂在静态字段上，而不是塞进 message：
-                // message 会被原样回送给服务商，多塞字段有可能被严格校验的网关拒掉。
                 LastFinishReason = _finishReason;
                 LastContentLength = _content.Length;
                 LastReasoningLength = _reasoning.Length;
                 LastHadToolCalls = _tools.Count > 0;
 
-                // 正文为空但拿到了思维链：不要当成失败丢掉（这类模型偶发这样），
+                // 正文为空但拿到了思维链：不要当成失败丢掉（推理类模型偶发这样），
                 // 但要如实标注它是推理内容，而不是正式结论。
                 if (_content.Length == 0 && _reasoning.Length > 0)
                 {
                     _content.Append("（模型只返回了推理内容，没有正文 —— 以下为它的思维过程，请自行判断）\n\n")
                             .Append(_reasoning);
                 }
+
+                // 仍然既无正文也无工具调用：**不能**造一条 `{role:assistant, content:null}` 塞进历史 ——
+                // 那条消息会让下一次请求被服务商 400 拒掉：
+                //   Invalid assistant message: content or tool_calls must be set（实测）
+                // 返回 null，上层会报「返回内容无法解析」并附原始响应的开头，足够定位。
+                if (_content.Length == 0 && _tools.Count == 0) return null;
 
                 var message = new Dictionary<string, object>();
                 message["role"] = "assistant";
