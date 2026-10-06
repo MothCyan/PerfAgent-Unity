@@ -37,10 +37,10 @@ namespace PerfAgent.Agent
                 Schema(P("snapshot_id", "string", "快照 id（文件名去掉 .json）"), "\"snapshot_id\""),
                 delegate (Dictionary<string, object> a) { return LoadSnapshot(MiniJson.Str(a, "snapshot_id")); }));
 
-            list.Add(Tool("get_summary", "获取当前快照的整体摘要：环境、关键指标、结论概览、问题数量。这是排查的第一步，用来决定后续深入哪个方向。",
+            list.Add(Tool("get_summary", "获取当前快照的整体摘要：环境、关键指标、结论概览、问题数量、gates（未被归因到项目的数字及原因）。这是排查的第一步，用来决定后续深入哪个方向。",
                 Schema(""), delegate (Dictionary<string, object> a) { return Summary(); }));
 
-            list.Add(Tool("get_metrics", "获取当前快照的全部标量指标（含预算对比与级别）。",
+            list.Add(Tool("get_metrics", "获取当前快照的全部标量指标（含预算对比与级别）。返回里同时带 gates：没通过闸门的数字**不能**当成项目问题（已写明为什么），也不要自己用「实测值 ÷ 预算」算倍数。",
                 Schema(P("filter", "string", "可选的名称子串过滤，如 \"Draw\"")),
                 delegate (Dictionary<string, object> a) { return Metrics(MiniJson.Str(a, "filter")); }));
 
@@ -64,7 +64,7 @@ namespace PerfAgent.Agent
                 Schema(P("top", "integer", "返回条数，默认 20") + "," + P("component", "string", "可选组件类型过滤，如 SkinnedMeshRenderer")),
                 delegate (Dictionary<string, object> a) { return SceneIssues(MiniJson.Int(a, "top", 20), MiniJson.Str(a, "component")); }));
 
-            list.Add(Tool("get_code_issues", "获取脚本反模式扫描结果（每帧方法体内的堆分配、查找类 API、LINQ 等）。",
+            list.Add(Tool("get_code_issues", "获取脚本反模式扫描结果（每帧方法体内的堆分配、查找类 API、LINQ 等）。返回里带 scan_coverage：0 处时先看它 —— 扫描了多少个脚本 / 作用域在哪 / 0 处的边界是什么。",
                 Schema(P("top", "integer", "返回条数，默认 25") + "," + P("pattern", "string", "可选的模式名过滤，如 linq")),
                 delegate (Dictionary<string, object> a) { return CodeIssues(MiniJson.Int(a, "top", 25), MiniJson.Str(a, "pattern")); }));
 
@@ -221,9 +221,12 @@ namespace PerfAgent.Agent
                 if (!string.IsNullOrEmpty(m.budget)) d["budget"] = m.budget;
                 d["severity"] = m.severity;
                 d["source"] = m.source;
+                var g = snap.FindGate(m.name);
+                if (g != null) d["gate"] = g.verdict;
                 metrics.Add(d);
             }
             r["metrics"] = metrics;
+            r["gates"] = GateList(snap);
 
             var findings = new List<object>();
             for (int i = 0; i < snap.findings.Count; i++)
@@ -252,8 +255,35 @@ namespace PerfAgent.Agent
                 for (int i = 0; i < snap.notes.Count && i < 10; i++) notes.Add(snap.notes[i]);
                 r["notes"] = notes;
             }
-            r["hint"] = "如需深入，请按 findings 的分类调用对应工具：渲染看 get_metrics/get_markers，内存看 get_metrics + get_asset_issues，CPU 看 get_markers，代码看 get_code_issues。";
+            r["hint"] = "如需深入，请按 findings 的分类调用对应工具：渲染看 get_metrics/get_markers，内存看 get_metrics + get_asset_issues，CPU 看 get_markers，代码看 get_code_issues。"
+                       + " 引用数字前先看 gates：没通过闸门的数字**不能**当成项目问题，也不要自己用「实测值 ÷ 预算」算倍数 —— "
+                       + "那会把含编辑器开销的口径算成严重超标。";
             return r;
+        }
+
+        /// <summary>
+        /// 闸门清单（含未通过的），给 LLM 直接引用。
+        ///
+        /// 为什么要单独给：光给每行数字，模型会自己拿实测值除预算得出一个吓人的倍数，
+        /// 而规则引擎其实早就把那个数压掉了（实测：AI 报「每帧分配超标 7.05 倍」，真因是含编辑器开销的口径）。
+        /// </summary>
+        static List<object> GateList(PerfSnapshot snap)
+        {
+            var list = new List<object>();
+            for (int i = 0; i < snap.gates.Count; i++)
+            {
+                var g = snap.gates[i];
+                var d = new Dictionary<string, object>();
+                d["metric"] = g.metric;
+                d["status"] = g.status;
+                d["passed"] = g.passed;
+                d["value"] = g.value;
+                d["threshold"] = g.threshold;
+                d["unit"] = g.unit;
+                d["verdict"] = g.verdict;
+                list.Add(d);
+            }
+            return list;
         }
 
         static object Metrics(string filter)
@@ -272,11 +302,18 @@ namespace PerfAgent.Agent
                 d["source"] = m.source;
                 d["severity"] = m.severity;
                 if (!string.IsNullOrEmpty(m.budget)) { d["budget"] = m.budget; d["budget_unit"] = m.budgetUnit; }
+                var g = snap.FindGate(m.name);
+                if (g != null) d["gate"] = g.verdict;
                 items.Add(d);
             }
             var r = new Dictionary<string, object>();
             r["snapshot_id"] = snap.id;
             r["metrics"] = items;
+            // 闸门口径必须和数字一起给（也是给 filter 之外的那些）——
+            // 只给数字会诱导模型自己算「超标多少倍」，把已经被闸门否决的结论当结论。
+            r["gates"] = GateList(snap);
+            r["gate_note"] = "gates 里 passed=false 的条目 = 这个数字看着超标、但规则引擎未归因到项目（已写明原因）。"
+                           + "引用前先看它，不要用「实测值 ÷ 预算」自己算倍数。";
             return r;
         }
 
@@ -475,6 +512,14 @@ namespace PerfAgent.Agent
             r["total"] = snap.codeIssues.Count;
             r["returned"] = items.Count;
             r["issues"] = items;
+            // 扫描覆盖率：0 处必须能自证。不给覆盖率的话，「扫描没跑」与「真的没写法」长得一模一样，
+            // 读者（包括 AI）只能看到一个孤零零的 0 然后写出「无法归因到任何位置」。
+            r["scan_coverage"] = snap.CodeScanExplanation();
+            if (!string.IsNullOrEmpty(snap.codeScopeRoot)) r["scope_root"] = snap.codeScopeRoot;
+            int inScope = 0;
+            for (int i = 0; i < snap.codeIssues.Count; i++) if (snap.codeIssues[i].inSceneScope) inScope++;
+            r["in_scope"] = inScope;
+            r["other_scope"] = snap.codeIssues.Count - inScope;
             return r;
         }
 

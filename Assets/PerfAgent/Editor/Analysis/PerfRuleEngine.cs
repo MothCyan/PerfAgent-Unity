@@ -75,6 +75,10 @@ namespace PerfAgent.Analysis
                     0.95f);
                 Ev(none, "frame_capture", "采集窗口帧数", "0", "帧",
                     PerfSnapshot.MinFramesForStats + " 帧", "Profiler 面板帧历史（firstFrameIndex / lastFrameIndex）");
+                s.AddGate("采集窗口帧数", PerfGate.StatusTooFewFrames, false, 0,
+                    PerfSnapshot.MinFramesForStats, "帧",
+                    "本次一帧都没采到：所有动态指标（帧耗时 / 每帧分配 / Draw Call）全部不可用，"
+                    + "只能看工程级审计；这份数据不能用于优化前后的对比。");
                 outList.Add(none);
                 return;
             }
@@ -88,6 +92,12 @@ namespace PerfAgent.Analysis
                     + "**因此这份数据不能用来和其它快照做优化前后的对比**，请重新采一次再比。",
                     PerfSnapshot.MinFramesForStats, window),
                 "跟随采集时多操作几秒（建议 ≥5 秒）：它会一直录到你退出 Play 或手动停止。", 0.9f);
+            s.AddGate("采集窗口帧数", PerfGate.StatusTooFewFrames, false, window,
+                PerfSnapshot.MinFramesForStats, "帧",
+                string.Format(CultureInfo.InvariantCulture,
+                    "采集窗口只有 {0} 帧（门槛 {1} 帧），统计类结论已跳过：均值 / P95 / 峰值 / 每帧分配都不给。"
+                    + "这份数据不能用来和其它快照做前后对比。",
+                    window, PerfSnapshot.MinFramesForStats));
             Ev(f, "frame_capture", "采集窗口帧数", window.ToString(CultureInfo.InvariantCulture), "帧",
                 PerfSnapshot.MinFramesForStats + " 帧", "Profiler 面板帧历史（窗口起止帧号之差）");
             outList.Add(f);
@@ -334,8 +344,26 @@ namespace PerfAgent.Analysis
                 //   3. 归因地板 —— 编辑器在 Play 模式下自身就要分配的量级。
                 //      实测：空场景（无用户脚本）在编辑器 Play 下是 14435 B/帧，而编辑模式空闲基线只有 465 B/帧，
                 //      两者不是一个量级 —— 残差落在地板以下时，无法把它与编辑器开销区分开，报了就是假问题。
-                double noise = baseline == null ? double.MaxValue : Math.Max(8192.0, baseline.value * 0.25);
-                double floor = Math.Max(Math.Max(b.maxManagedAllocBytesPerFrame, noise), b.editorPlayModeOverheadBytes);
+                double noise = baseline == null ? double.NaN : Math.Max(8192.0, baseline.value * 0.25);
+                double floor = Math.Max(Math.Max(b.maxManagedAllocBytesPerFrame, double.IsNaN(noise) ? 0 : noise),
+                                        b.editorPlayModeOverheadBytes);
+                string noiseText = double.IsNaN(noise)
+                    ? "无基线（不参与判断）"
+                    : Fmt(noise) + " B/帧";
+
+                // 口径提示（不管过没过闸门都给）：
+                // 实测踩过：AI 拿「每帧托管分配 14443.6 B（预算 2048 B）」自己算出「超标 7.05 倍」，
+                // 而这是个**含编辑器开销**的实测值，根本不该拿去和播放器预算比 —— 必须把口径写在数字旁边。
+                if (rawAlloc != null && !double.IsNaN(rawAlloc.value))
+                {
+                    s.AddGate("每帧托管分配", PerfGate.StatusCaliber, false, rawAlloc.value,
+                        b.maxManagedAllocBytesPerFrame, "B",
+                        string.Format(CultureInfo.InvariantCulture,
+                            "「每帧托管分配」{0:0.#} B/帧 是**含编辑器自身开销**的实测值，不能拿它和播放器预算 {1} B 算倍数"
+                            + "（空场景在编辑器 Play 模式下实测就有 14435 B/帧，归因地板取 {2:0} B/帧）。"
+                            + "要比的是「项目每帧分配」（已扣基线），而且它还得越过归因地板 {2:0} B/帧才能归因到项目。",
+                            rawAlloc.value, b.maxManagedAllocBytesPerFrame, b.editorPlayModeOverheadBytes));
+                }
 
                 if (alloc.value > floor && !s.WindowTooSmallForStats())
                 {
@@ -365,18 +393,27 @@ namespace PerfAgent.Analysis
                     Ev(f, "frame_capture", "归因地板（编辑器 Play 模式开销上界）",
                         b.editorPlayModeOverheadBytes.ToString(CultureInfo.InvariantCulture), "B",
                         "残差必须越过它才能归因到项目", "PerfBudget.editorPlayModeOverheadBytes（空场景实测 14435 B/帧）");
+                    s.AddGate("项目每帧分配", PerfGate.StatusPassed, true, alloc.value, floor, "B",
+                        string.Format(CultureInfo.InvariantCulture,
+                            "项目每帧分配 {0:0} B/帧 同时越过播放器预算 {1} B、基线噪声带与归因地板 {2:0} B/帧，"
+                            + "判定为项目问题（已扣除编辑器开销，不是编辑器自身抖动）。",
+                            alloc.value, b.maxManagedAllocBytesPerFrame, floor));
                     outList.Add(f);
                 }
                 else if (alloc.value > b.maxManagedAllocBytesPerFrame)
                 {
                     // 越过预算但过不了闸门：不报结论，但要写清楚为什么 ——
                     // 否则用户会以为「数字这么吓人，工具却什么都不说」。
-                    s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                    // 这条结论同时写进快照备注与 gates：工具出口/本地回答/报告/LLM 底稿都靠它。
+                    string why = string.Format(CultureInfo.InvariantCulture,
                         "项目每帧分配估算 {0:0} B/帧 虽然超过播放器预算 {1} B，但未越过归因闸门"
-                        + "（归因地板 {2:0} B/帧、基线噪声带 {3} B/帧{4}）：在编辑器里它无法与编辑器自身的 "
+                        + "（归因地板 {2:0} B/帧、基线噪声带 {3}{4}）：在编辑器里它无法与编辑器自身的 "
                         + "Play 模式开销区分开，因此本次不报为项目问题。要确认真实分配，请用 Player 构建版复核（构建里没有编辑器开销）。",
-                        alloc.value, b.maxManagedAllocBytesPerFrame, b.editorPlayModeOverheadBytes, noise,
-                        s.WindowTooSmallForStats() ? "、且窗口帧数不足 " + PerfSnapshot.MinFramesForStats + " 帧" : ""));
+                        alloc.value, b.maxManagedAllocBytesPerFrame, b.editorPlayModeOverheadBytes, noiseText,
+                        s.WindowTooSmallForStats() ? "、且窗口帧数不足 " + PerfSnapshot.MinFramesForStats + " 帧" : "");
+                    s.AddNote(why);
+                    s.AddGate("项目每帧分配", PerfGate.StatusBelowFloor, false, alloc.value,
+                        b.editorPlayModeOverheadBytes, "B", why);
                 }
                 else if (alloc.value > 0 && b.maxManagedAllocBytesPerFrame == 0 && alloc.value > noise)
                 {
@@ -387,6 +424,24 @@ namespace PerfAgent.Analysis
                     Ev(f, "frame_capture", "项目每帧分配", Fmt(alloc.value), "B", "0 B", alloc.source);
                     outList.Add(f);
                 }
+                else if (alloc.value > 0)
+                {
+                    s.AddGate("项目每帧分配", PerfGate.StatusPassed, true, alloc.value, floor, "B",
+                        string.Format(CultureInfo.InvariantCulture,
+                            "项目每帧分配 {0:0} B/帧 未超播放器预算 {1} B（也未越过归因地板 {2:0} B/帧）："
+                            + "分配侧没有要修的问题。",
+                            alloc.value, b.maxManagedAllocBytesPerFrame, floor));
+                }
+            }
+            else
+            {
+                // 拿不到「项目每帧分配」时也要留痕：否则「报告里没有分配结论」会被读成「分配没问题」。
+                s.AddGate("项目每帧分配", PerfGate.StatusNoData, false, 0,
+                    b.maxManagedAllocBytesPerFrame, "B",
+                    "拿不到「项目每帧分配」（缺少编辑器开销基线，或分配口径不可用）：本次不下分配结论 —— "
+                    + "这不等于「分配没问题」。" + (rawAlloc == null ? "" : string.Format(CultureInfo.InvariantCulture,
+                        "实测「每帧托管分配」是 {0:0} B/帧，那是含编辑器开销的口径，不能直接当项目分配引用。",
+                        rawAlloc.value)));
             }
 
             var gc = s.FindMetric("GC 次数");

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using PerfAgent.Core;
 
 namespace PerfAgent.Core
@@ -49,6 +50,43 @@ namespace PerfAgent.Core
             return metric + "=" + value + (string.IsNullOrEmpty(unit) ? "" : unit)
                  + (string.IsNullOrEmpty(threshold) ? "" : " (预算 " + threshold + ")")
                  + (string.IsNullOrEmpty(source) ? "" : " @" + source);
+        }
+    }
+
+    /// <summary>
+    /// 一条闸门记录：某个数字**为什么没有被报成问题**（或为什么被报了）。
+    ///
+    /// 为什么不只写在 <c>notes</c> 里：notes 会被截断（工具只回前 10 条），而且换个出口
+    /// （MCP 工具 / 本地回答 / 报告）就看不见了。实测踩过：AI 从 get_metrics 拿到
+    /// 「每帧托管分配 14443.6 B（预算 2048 B）」，自己算出「超标 7.05 倍」并写进回答 ——
+    /// 而规则引擎其实早就因为「归因地板 16384 B」把这个数压掉了（那是编辑器自身 Play 模式开销）。
+    /// 同一个事实在不同出口说法不一致，用户看到的就是一条假问题 + 一份空清单。
+    /// </summary>
+    [Serializable]
+    public class PerfGate
+    {
+        /// <summary>闸门状态（给出口直接引用，不要各写各的）。</summary>
+        public const string StatusCaliber = "口径提示";
+        public const string StatusBelowFloor = "未越过归因闸门";
+        public const string StatusTooFewFrames = "窗口帧数不足";
+        public const string StatusNoData = "数据缺失";
+        public const string StatusPassed = "通过";
+
+        /// <summary>对应 PerfMetric.name —— 出口可以据此把闸门挂到数字旁边。</summary>
+        public string metric = "";
+        public string status = "";
+        /// <summary>闸门是否成立（成立才会产出结论）。</summary>
+        public bool passed;
+        public double value;
+        /// <summary>对照阈值：预算 / 归因地板 / 样本量门槛。</summary>
+        public double threshold;
+        public string unit = "";
+        /// <summary>一句话结论，各出口可直接引用（人话，含结论与下一步）。</summary>
+        public string verdict = "";
+
+        public override string ToString()
+        {
+            return metric + " " + status + "：" + verdict;
         }
     }
 
@@ -325,6 +363,79 @@ namespace PerfAgent.Core
         public List<PerfFinding> findings = new List<PerfFinding>();
         public List<string> notes = new List<string>();
         public List<string> capturedSources = new List<string>();
+
+        /// <summary>
+        /// 闸门记录（见 <see cref="PerfGate"/>）：哪些数字看着超标、但没被算成项目问题，以及为什么。
+        /// 出口（MCP 工具 / 本地回答 / 报告）必须把它带上，否则读者会自己拿实测值除预算。
+        /// </summary>
+        public List<PerfGate> gates = new List<PerfGate>();
+
+        public PerfGate AddGate(string metric, string status, bool passed,
+                                double value, double threshold, string unit, string verdict)
+        {
+            var g = new PerfGate();
+            g.metric = metric; g.status = status; g.passed = passed;
+            g.value = value; g.threshold = threshold; g.unit = unit; g.verdict = verdict;
+            for (int i = 0; i < gates.Count; i++)
+            {
+                if (gates[i].metric == metric && gates[i].status == status) { gates[i] = g; return g; }
+            }
+            gates.Add(g);
+            return g;
+        }
+
+        public PerfGate FindGate(string metric)
+        {
+            for (int i = 0; i < gates.Count; i++)
+                if (gates[i].metric == metric) return gates[i];
+            return null;
+        }
+
+        /// <summary>没通过闸门的记录 —— 〔这些数字别当成问题〕的清单。</summary>
+        public List<PerfGate> SuppressedGates()
+        {
+            return gates.FindAll(delegate (PerfGate g) { return !g.passed; });
+        }
+
+        /// <summary>
+        /// 静态扫描的覆盖率，以及「为什么是 0 处」。
+        ///
+        /// 0 处必须能自证：它既可能是「真的没写法」（优化后的版本就该是 0），
+        /// 也可能是「扫描没跑 / 全被跳过」。不给覆盖率的话，两者长得一模一样，
+        /// 读者（包括 AI）只能看到一个孤零零的 0 然后自己猜。
+        /// </summary>
+        public string CodeScanExplanation()
+        {
+            int scanned = (int)MetricValue("已扫描脚本", 0);
+            int total = codeIssues == null ? 0 : codeIssues.Count;
+            int inScope = 0;
+            if (codeIssues != null)
+            {
+                for (int i = 0; i < codeIssues.Count; i++) if (codeIssues[i].inSceneScope) inScope++;
+            }
+
+            var sb = new StringBuilder();
+            if (scanned <= 0)
+            {
+                sb.Append("本次没有扫到任何脚本（已扫描 0 个）：脚本反模式扫描没有跑，或者被全部跳过。");
+                sb.Append("结论里「代码问题数 = 0」不能读成「代码没问题」。");
+                return sb.ToString();
+            }
+
+            sb.Append("已扫描 ").Append(scanned).Append(" 个脚本，命中 ").Append(total).Append(" 处");
+            if (!string.IsNullOrEmpty(codeScopeRoot))
+            {
+                sb.Append("（当前场景目录 ").Append(codeScopeRoot).Append(" 下 ").Append(inScope)
+                  .Append(" 处，其它目录 ").Append(total - inScope).Append(" 处）");
+            }
+            if (total == 0)
+            {
+                sb.Append("。0 处不等于「没有分配点」：扫描只覆盖 Assets 下会进玩家构建的脚本，"
+                          + "只认 Update/OnGUI/回调等每帧方法体内的写法；第三方插件、反射调用、协程闭包、"
+                          + "以及打包后才运行的 IL2CPP 侧代码都扫不到。要坐实分配就在 Player 构建里看 GC Alloc 列。");
+            }
+            return sb.ToString();
+        }
 
         // ---- 派生统计 ----
 

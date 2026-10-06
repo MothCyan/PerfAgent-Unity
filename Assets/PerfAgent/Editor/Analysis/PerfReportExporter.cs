@@ -178,6 +178,9 @@ namespace PerfAgent.Analysis
                 }
             }
 
+            // 闸门口径紧跟结论：那些「看着超标但没被算成问题」的数字必须比读者先看到。
+            AppendGateSection(sb, s);
+
             // ---- 帧数据 ----
             if (s.frames.Count > 0)
             {
@@ -299,6 +302,32 @@ namespace PerfAgent.Analysis
                 sb.Append("| ").Append(SeverityLabel(v.severity)).Append(" | `").Append(EscapePipe(v.hierarchyPath)).Append("` | ")
                   .Append(v.componentType).Append(" | ").Append(EscapePipe(v.issue)).Append(" | ")
                   .Append(EscapePipe(v.suggestion)).Append(" |\n");
+            }
+            sb.Append('\n');
+        }
+
+        /// <summary>
+        /// 闸门口径：哪些数字看着超预算、但没被算成项目问题，以及为什么。
+        ///
+        /// 为什么必须在报告里写：这些数字散在各处（每帧托管分配、采集窗口帧数…），
+        /// 不集中说明的话，读者会拿实测值除预算自己算出「超标 7.05 倍」——
+        /// 而那个数因为含编辑器开销，规则引擎本来就把它压掉了（参见 PerfGate 的注释）。
+        /// </summary>
+        static void AppendGateSection(StringBuilder sb, PerfSnapshot s)
+        {
+            var suppressed = s.SuppressedGates();
+            if (suppressed.Count == 0) return;
+
+            sb.Append("## 闸门口径（这些数字没被算成问题）\n\n");
+            sb.Append("下面这些数字看着超预算，但**不是**本次归因到的项目问题 —— 直接拿它们做对比或算倍数会得出错结论：\n\n");
+            sb.Append("| 数字 | 值 | 阈值 | 闸门 | 为什么 |\n|---|---:|---:|---|---|\n");
+            for (int i = 0; i < suppressed.Count; i++)
+            {
+                var g = suppressed[i];
+                sb.Append("| ").Append(EscapePipe(g.metric)).Append(" | ")
+                  .Append(g.value.ToString("0.##", CultureInfo.InvariantCulture)).Append(' ').Append(g.unit).Append(" | ")
+                  .Append(g.threshold.ToString("0.##", CultureInfo.InvariantCulture)).Append(' ').Append(g.unit).Append(" | ")
+                  .Append(EscapePipe(g.status)).Append(" | ").Append(EscapePipe(g.verdict)).Append(" |\n");
             }
             sb.Append('\n');
         }

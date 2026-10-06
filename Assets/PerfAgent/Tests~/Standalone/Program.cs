@@ -30,6 +30,8 @@ namespace PerfAgent.RuleRegression
                 TinyCaptureWindowSuppressesSampleDependentVerdicts,
                 ZeroFrameCaptureIsReportedAsError,
                 CodeFindingsAreSplitBySceneDirectory,
+                AllocGatesAreRecordedForEveryOutcome,
+                CodeScanExplanationSelfProvesZero,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
                 ProjectAllocAboveNoiseBandStillFires,
                 ExcessiveDrawCalls,
@@ -288,6 +290,94 @@ namespace PerfAgent.RuleRegression
             var sb = new System.Text.StringBuilder("证据里找不到 " + metric + "=" + value + "；实有：");
             for (int i = 0; i < f.evidence.Count; i++) sb.Append(f.evidence[i].ToString()).Append("; ");
             throw new InvalidOperationException(sb.ToString());
+        }
+
+        /// <summary>
+        /// 实测事故：AI 从工具拿到「每帧托管分配 14443.6 B（预算 2048 B）」，自己算出「超标 7.05 倍」
+        /// 写进回答 —— 那是**含编辑器开销**的口径（空工程 Play 模式就是 14435 B/帧），
+        /// 规则引擎早就按归因地板把它压掉了。问题不在闸门，在于「为什么不算问题」没跟着数字一起出去。
+        /// 现在三种结局都必须在快照里留下闸门记录，所有出口（MCP / 本地回答 / 报告）共用同一条口径。
+        /// </summary>
+        static void AllocGatesAreRecordedForEveryOutcome()
+        {
+            // 1) 被闸门压掉：不报结论，但必须留下「为什么」
+            var suppressedSnap = CleanSnapshot();
+            SetPerFrameAlloc(suppressedSnap, 14443.6, 465.0);     // 残差 13978.6 B/帧
+            suppressedSnap.capturedFrameCount = 300;
+
+            var findings = Evaluate(suppressedSnap);
+            Equal(0, findings.FindAll(f => f.id == "gc_alloc_per_frame").Count,
+                "残差没过归因地板时不能报成项目问题");
+
+            var gate = suppressedSnap.FindGate("项目每帧分配");
+            True(gate != null, "被闸门拦下时必须留下闸门记录（否则各出口只能自己猜）");
+            True(!gate.passed, "被拦下的闸门 passed 必须是 false");
+            Equal(PerfGate.StatusBelowFloor, gate.status, "状态要写清是没过归因闸门");
+            True(gate.verdict.IndexOf("归因地板", StringComparison.Ordinal) >= 0,
+                "闸门结论要说清原因（归因地板）：" + gate.verdict);
+            True(gate.verdict.IndexOf("Player 构建版", StringComparison.Ordinal) >= 0,
+                "闸门结论要给下一步（用 Player 构建版复核）：" + gate.verdict);
+
+            var caliber = suppressedSnap.FindGate("每帧托管分配");
+            True(caliber != null, "含编辑器开销的口径必须有口径提示（否则会被拿去除预算）");
+            True(caliber.verdict.IndexOf("不能", StringComparison.Ordinal) >= 0
+                 && caliber.verdict.IndexOf("2048", StringComparison.Ordinal) >= 0,
+                "口径提示要点名「不能拿它和播放器预算算倍数」：" + caliber.verdict);
+
+            // 2) 越过闸门：照常报，并记一条通过的闸门
+            var overSnap = CleanSnapshot();
+            SetPerFrameAlloc(overSnap, 70465.0, 465.0);           // 残差 70000 B/帧
+            overSnap.capturedFrameCount = 300;
+            Equal(1, Evaluate(overSnap).FindAll(f => f.id == "gc_alloc_per_frame").Count,
+                "真的越过归因地板时必须报");
+            var overGate = overSnap.FindGate("项目每帧分配");
+            True(overGate != null && overGate.passed, "越过闸门时也要留下记录（passed=true）");
+            Equal(PerfGate.StatusPassed, overGate.status, "状态写「通过」");
+
+            // 3) 拿不到分配数据：不报结论，但也不能安静 —— 静默会被读成「分配没问题」
+            var noDataSnap = CleanSnapshot();
+            noDataSnap.capturedFrameCount = 300;
+            noDataSnap.SetMetric("每帧托管分配", "B", 14443.6, "ProfilerRecorder: GC Allocated In Frame");
+            Evaluate(noDataSnap);
+            var noData = noDataSnap.FindGate("项目每帧分配");
+            True(noData != null && !noData.passed, "没有归因数据时也要留记录");
+            Equal(PerfGate.StatusNoData, noData.status, "状态写「数据缺失」");
+            True(noData.verdict.IndexOf("不等于", StringComparison.Ordinal) >= 0,
+                "要说清「不下结论」不等于「没问题」：" + noData.verdict);
+
+            // 4) 三个出口必须说同一句话：本地回答、给 LLM 的事实底稿都要带上闸门口径。
+            //    （实测那次假问题就出在这里：底稿只给了「值 + 预算」，模型自己算出了 7.05 倍）
+            string brief = LocalAnswer.BriefForPrompt(suppressedSnap, "每帧的分配是从哪来的？");
+            True(brief.IndexOf("闸门口径", StringComparison.Ordinal) >= 0,
+                "LLM 底稿必须带闸门口径：" + brief);
+            True(brief.IndexOf("不要自己用「实测值 ÷ 预算」算倍数", StringComparison.Ordinal) >= 0,
+                "底稿要明确禁止自己算倍数");
+
+            string answer = LocalAnswer.Answer(suppressedSnap, "每帧的分配是从哪来的？");
+            True(answer.IndexOf("闸门口径", StringComparison.Ordinal) >= 0,
+                "本地回答也要写出闸门口径（用户看的就是这个）：" + answer);
+        }
+
+        /// <summary>
+        /// 代码扫描返回 0 处时必须能自证：0 既可能是「优化后真的没写法」，也可能是「扫描压根没跑」。
+        /// 实测事故：AI 拿到 total=0 后只能说「清单是空的…无法归因到任何位置」。
+        /// </summary>
+        static void CodeScanExplanationSelfProvesZero()
+        {
+            var scanned = CleanSnapshot();
+            scanned.SetMetric("已扫描脚本", "个", 12, "Assets/**/*.cs");
+            scanned.codeScopeRoot = "Assets/PerfAgentSample/After/";
+            var text = scanned.CodeScanExplanation();
+            True(text.IndexOf("已扫描 12 个脚本", StringComparison.Ordinal) >= 0, "要给出覆盖率：" + text);
+            True(text.IndexOf("Assets/PerfAgentSample/After/", StringComparison.Ordinal) >= 0, "要给出作用域根：" + text);
+            True(text.IndexOf("0 处不等于", StringComparison.Ordinal) >= 0,
+                "命中 0 处时要说明它不等于没有分配点：" + text);
+
+            var notScanned = CleanSnapshot();
+            var none = notScanned.CodeScanExplanation();
+            True(none.IndexOf("没有扫到任何脚本", StringComparison.Ordinal) >= 0,
+                "扫描没跑时不能只说「0 处」：" + none);
+            True(none.IndexOf("不能读成", StringComparison.Ordinal) >= 0, "要明说不能被误读：" + none);
         }
 
         /// <summary>

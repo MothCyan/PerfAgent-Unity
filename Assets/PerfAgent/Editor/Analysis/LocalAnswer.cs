@@ -327,6 +327,28 @@ namespace PerfAgent.Analysis
             if (!chatStyle) sb.Append("| 指标 | 值 | 预算 |\n|---|---:|---:|\n");
             sb.Append(rows);
             sb.Append('\n');
+
+            // 闸门口径：这些数字看着超预算，但规则引擎没把它算成项目问题。
+            // 不写出来，用户（和 AI）就会自己拿实测值除预算，得出一个工具本来已经否决的结论
+            //（实测：有人拿「每帧托管分配 14443.6 B ÷ 预算 2048 B」报了「超标 7.05 倍」，
+            // 而那是含编辑器开销的口径）。
+            var gateLines = new StringBuilder();
+            for (int i = 0; i < names.Count; i++)
+            {
+                var g = s.FindGate(names[i]);
+                if (g == null || g.passed) continue;
+                gateLines.Append("- **").Append(g.metric).Append("**（").Append(g.status).Append("）：").Append(g.verdict).Append('\n');
+            }
+            var windowGate = s.FindGate("采集窗口帧数");
+            if (windowGate != null && !windowGate.passed && names.IndexOf("采集窗口帧数") < 0)
+                gateLines.Append("- **采集窗口帧数**（").Append(windowGate.status).Append("）：").Append(windowGate.verdict).Append('\n');
+
+            if (gateLines.Length > 0)
+            {
+                sb.Append(chatStyle ? "**这些数字没被算成问题（闸门口径）**\n\n" : "### 闸门口径\n\n");
+                sb.Append(gateLines);
+                sb.Append('\n');
+            }
         }
 
         /// <summary>
@@ -409,6 +431,22 @@ namespace PerfAgent.Analysis
             }
             if (printed == 0) sb.Append("（无）");
             sb.Append('\n');
+
+            // 闸门口径也要进底稿 —— 它决定了上面哪些数字**不能**被当成问题引用。
+            // 只给数字不给口径，模型会自己算倍数，写出一条规则引擎早就否决的「严重超标」。
+            int gateLines = 0;
+            for (int i = 0; i < s.gates.Count; i++)
+            {
+                var g = s.gates[i];
+                if (g.passed) continue;
+                sb.Append(gateLines++ == 0
+                    ? "闸门口径（这些数字看着超预算，但规则引擎未归因到项目，不要当成问题，也不要自己用「实测值 ÷ 预算」算倍数）：\n"
+                    : "");
+                sb.Append("- [").Append(g.status).Append("] ").Append(g.metric)
+                  .Append(" = ").Append(g.value.ToString("0.##", CultureInfo.InvariantCulture)).Append(g.unit)
+                  .Append("（阈值 ").Append(g.threshold.ToString("0.##", CultureInfo.InvariantCulture)).Append(g.unit).Append("）：")
+                  .Append(g.verdict).Append('\n');
+            }
 
             sb.Append("注意：以上数字由规则引擎从快照算出，可直接引用；没出现的维度就是没有超预算结论，"
                       + "不要凭空推测那部分。\n");
