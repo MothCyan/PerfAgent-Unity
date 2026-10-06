@@ -728,19 +728,6 @@ namespace PerfAgent.UI
             }
         }
 
-        /// <summary>手动在「小窗口 / 完整面板」之间切换（自动切换只发生在跟随采集的开始与结束）。</summary>
-        [MenuItem(MenuRoot + "面板：缩成小窗口 / 展开", false, 106)]
-        public static void CompactMenu()
-        {
-            var window = GetWindow<PerfAgentWindow>("性能诊断");
-            if (window._compactBar == null)
-            {
-                window.SetStatus("面板还在初始化，稍后再点一次。");
-                return;
-            }
-            window.SetCompact(!window._compact, true);
-        }
-
         // =====================================================================
         // 实时帧率波形
         //
