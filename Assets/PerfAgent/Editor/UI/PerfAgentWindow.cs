@@ -686,6 +686,27 @@ namespace PerfAgent.UI
             _transcript.style.color = Theme.Text;
             _transcriptScroll.Add(_transcript);
 
+            // 示例问题：点一下填进输入框（不直接发送）。
+            //
+            // 「需 AI」的标注是有用的东西：它让用户**在提问前**就看出两条路的分工 ——
+            // 本地引擎只比预算、不理解句子，所以「为什么 / 先修哪个」这类问题它只能给事实。
+            // 以前这个边界藏在回答末尾，用户问完才发现，就会觉得「用不用 AI 看不出区别」。
+            var samples = new VisualElement();
+            samples.style.flexDirection = FlexDirection.Row;
+            samples.style.flexWrap = Wrap.Wrap;
+            samples.style.alignItems = Align.Center;
+            samples.style.marginTop = 4;
+            var samplesLabel = new Label("试着问：");
+            samplesLabel.style.fontSize = Theme.SizeSmall;
+            samplesLabel.style.color = Theme.TextFaint;
+            samplesLabel.style.marginRight = 4;
+            samples.Add(samplesLabel);
+            SampleChip(samples, "帧耗时超预算了吗？", false);
+            SampleChip(samples, "每帧分配从哪来？", false);
+            SampleChip(samples, "为什么只有战斗时才卡？", true);
+            SampleChip(samples, "我该先修哪一个？", true);
+            card.Add(samples);
+
             var row = new VisualElement();
             row.style.flexDirection = FlexDirection.Row;
             row.style.marginTop = 6;
@@ -792,18 +813,23 @@ namespace PerfAgent.UI
             if (string.IsNullOrEmpty(text)) return;
 
             _input.value = "";
-            AppendTranscript("\n**我**：" + text + "\n\n**Agent**：");
+            AppendTranscript("\n**我**：" + text + "\n\n");
             SetSending(true);
 
-            // 本地路线有两类情况，都得走规则引擎（LlmClient 里还有一道硬闸门兜底）：
-            //   纯本地模式：用户明确要求不联网
-            //   没配 Key：即便想联网也发不出去
-            // 以前只判断了「有没有 Key」—— 于是开了纯本地模式、但配过 Key（含环境变量）时，
-            // 请求会真的发出去，跟开关的承诺相反。
             var cfg = PerfAgentSettings.Config;
+            var snap = PerfSession.Current;
+
+            // 两条路都先给「本地规则引擎」的结论。
+            //
+            // 它不是降级品，而是这个工具的事实底座：数字与结论由规则算出、可逐条回溯，
+            // AI 不应该重算它们。所以每次提问都把这一半固定贴出来 ——
+            // 开了 AI 时用户就能当场看到两条路的差别（本地给事实，AI 在此基础上给因果与取舍），
+            // 而不是靠文档解释「AI 有什么用」。
+            AppendTranscript("**本地规则引擎**（规则算出来的结论与数字，可逐条回溯）\n\n"
+                           + LocalAnswer.Answer(snap, text));
+
             if (cfg.localOnlyNoLlm || !cfg.HasApiKey)
             {
-                AppendTranscript(LocalAnswer.Answer(PerfSession.Current, text));
                 SetSending(false);
                 SetStatus(cfg.localOnlyNoLlm
                     ? "已用本地规则引擎回答（纯本地模式，未联网）"
@@ -811,6 +837,8 @@ namespace PerfAgent.UI
                 SaveConversation();
                 return;
             }
+
+            AppendTranscript("\n**AI 解释（" + cfg.model + "）**\n\n");
 
             var streamed = new StringBuilder();
             Agent.Ask(text,
@@ -832,7 +860,34 @@ namespace PerfAgent.UI
                     SetSending(false);
                     SetStatus("失败");
                     SaveConversation();
-                });
+                },
+                // 把本地结论作为事实底稿一起发过去：AI 在确定性的那一半之上解释，
+                // 数字不会被模型改写，也省掉一轮工具调用。
+                LocalAnswer.BriefForPrompt(snap, text));
+        }
+
+        /// <summary>
+        /// 示例问题标签：点一下把问题填进输入框（不直接发送）。
+        /// needsAi = true 的会标上「需 AI」—— 本地引擎只比预算、不理解句子，
+        /// 这类「为什么 / 先修哪个」的问题它只能给事实，得说在前面。
+        /// </summary>
+        void SampleChip(VisualElement host, string question, bool needsAi)
+        {
+            var b = Theme.Ghost(needsAi ? question + "（需 AI）" : question, delegate
+            {
+                if (_input == null) return;
+                _input.value = question;
+                _input.Focus();
+
+                bool aiReady = !PerfAgentSettings.Config.localOnlyNoLlm && PerfAgentSettings.Config.HasApiKey;
+                SetStatus(needsAi && !aiReady
+                    ? "这是解释类问题（要因果与取舍），本地规则引擎答不了 —— 点右上「启用 AI」后再发（Ctrl+Enter）。"
+                    : "已填入输入框，Ctrl+Enter 发送。");
+            });
+            b.style.fontSize = Theme.SizeSmall;
+            b.style.marginRight = 4;
+            b.style.marginBottom = 2;
+            host.Add(b);
         }
 
         /// <summary>

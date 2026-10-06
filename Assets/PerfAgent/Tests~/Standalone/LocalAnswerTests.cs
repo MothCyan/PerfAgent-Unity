@@ -22,6 +22,8 @@ namespace PerfAgent.RuleRegression
             tests.Add(LocalAnswerUnmatchedQuestionFallsBackToAll);
             tests.Add(LocalAnswerWithoutSnapshotExplainsWhatToDo);
             tests.Add(LocalAnswerWarnsWhenWindowTooSmall);
+            tests.Add(LocalAnswerFlagsExplanationQuestionsUpFront);
+            tests.Add(LocalAnswerBriefIsGroundedAndCompact);
         }
 
         static PerfSnapshot SnapshotWithFindings()
@@ -119,6 +121,47 @@ namespace PerfAgent.RuleRegression
                 "tiny window must be explained before listing findings");
             True(answer.IndexOf("采集窗口只有 10 帧", StringComparison.Ordinal) >= 0,
                 "the info-level finding of the matched dimension must still be shown");
+        }
+
+        /// <summary>
+        /// 「为什么 / 我该先修哪个」这类问题要的是因果与取舍，本地引擎给不了。
+        /// 必须**在开头**就说清楚 —— 藏在末尾的话，用户看到的就是一段看着很像答案的结论列表，
+        /// 这正是「看不出用不用 AI 区别」的来源。
+        /// </summary>
+        static void LocalAnswerFlagsExplanationQuestionsUpFront()
+        {
+            var s = SnapshotWithFindings();
+            True(LocalAnswer.IsExplanationQuestion("为什么只有战斗时才卡？"), "为什么 类问题必须被识别为解释类");
+            True(LocalAnswer.IsExplanationQuestion("我该先修哪一个？"), "决策类问题必须被识别为解释类");
+            True(!LocalAnswer.IsExplanationQuestion("每帧分配是多少？"), "事实类问题不该被误判为解释类");
+
+            string answer = LocalAnswer.Answer(s, "为什么只有战斗时才卡？");
+            int flag = answer.IndexOf("解释类", StringComparison.Ordinal);
+            int findings = answer.IndexOf("### 结论", StringComparison.Ordinal);
+            True(flag >= 0, "解释类问题必须明确提示本地答不了");
+            True(findings < 0 || flag < findings, "这条提示必须在结论之前出现");
+            True(answer.IndexOf("因果", StringComparison.Ordinal) >= 0, "要说明本地给不出什么（因果 / 取舍）");
+        }
+
+        /// <summary>
+        /// 给 LLM 的事实底稿：要带得上可引用的数字与证据，且不要把「给人看的说明」也塞进去
+        /// （底稿会跟着每一条提问发给服务商，写废话就是花钱）。
+        /// </summary>
+        static void LocalAnswerBriefIsGroundedAndCompact()
+        {
+            var s = SnapshotWithFindings();
+            string brief = LocalAnswer.BriefForPrompt(s, "每帧的分配是从哪来的？");
+
+            True(brief.IndexOf("13970", StringComparison.Ordinal) >= 0, "brief must carry the attributable number");
+            True(brief.IndexOf("内存", StringComparison.Ordinal) >= 0, "brief must name the matched dimension");
+            True(brief.IndexOf("证据", StringComparison.Ordinal) >= 0, "brief must carry evidence lines");
+            True(brief.IndexOf("不要凭空推测", StringComparison.Ordinal) >= 0, "brief must tell the model not to invent numbers");
+            True(brief.IndexOf("本地引擎的边界", StringComparison.Ordinal) < 0,
+                "brief is for the model, not for the user — human-facing sections must stay out");
+            True(brief.IndexOf("|---", StringComparison.Ordinal) < 0, "brief must not carry markdown tables");
+
+            string empty = LocalAnswer.BriefForPrompt(null, "随便问问");
+            True(!string.IsNullOrEmpty(empty), "brief without a snapshot must still be safe to send");
         }
 
         static void True(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

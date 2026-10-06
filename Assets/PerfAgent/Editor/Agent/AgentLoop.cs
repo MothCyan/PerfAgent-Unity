@@ -98,7 +98,8 @@ namespace PerfAgent.Agent
             LastAnswer = "";
         }
 
-        public void Ask(string userText, Action<string> onDelta, Action<string> onDone, Action<string> onError)
+        public void Ask(string userText, Action<string> onDelta, Action<string> onDone, Action<string> onError,
+            string grounding = null)
         {
             if (Busy)
             {
@@ -108,10 +109,26 @@ namespace PerfAgent.Agent
             if (string.IsNullOrEmpty(userText)) return;
 
             EnsureSystemPrompt();
-            AddMessage("user", userText);
+            AddMessage("user", string.IsNullOrEmpty(grounding) ? userText : WithGrounding(userText, grounding));
             Busy = true;
             Status("思考中…");
             RunStep(onDelta, onDone, onError);
+        }
+
+        /// <summary>
+        /// 把「本地规则引擎已经算好的结论」附在问题后面一起发出去。
+        ///
+        /// 为什么不让它自己再算一遍：这里是刻意让 LLM **在确定性结论之上做解释** ——
+        ///   1. 回答里引用的数字与本地一致（模型不会自己编一个）；
+        ///   2. 少一轮工具调用，省 token 也更快；
+        ///   3. 用户已经在上面看到本地结论了，所以明确要求它不要复述，只答“为什么会这样 / 先修哪个 / 怎么改”。
+        /// </summary>
+        static string WithGrounding(string userText, string grounding)
+        {
+            return userText
+                 + "\n\n（以下是本地规则引擎已经算好的结论，直接当作你的事实输入："
+                 + "不要复述它们，只回答它们解释不了的部分 —— 为什么会这样、优先级怎么排、具体怎么改。）\n"
+                 + grounding;
         }
 
         void RunStep(Action<string> onDelta, Action<string> onDone, Action<string> onError)

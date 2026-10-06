@@ -97,6 +97,31 @@ namespace PerfAgent.Analysis
             "资源总数", "已扫描脚本", "代码问题数"
         };
 
+        /// <summary>
+        /// 「解释类 / 决策类」问题的词。
+        ///
+        /// 这类问题的共性是：它们要的不是事实，而是因果、取舍与判断 ——
+        /// 「为什么只有战斗时卡」「我该先修哪个」「这个数算高吗」。
+        /// 规则引擎给不了这些（它只会比预算），所以命中时要在**开头**就说清楚，
+        /// 而不是把「我不理解句子」藏在末尾 —— 那才是让人觉得「看不出用不用 AI 差别」的原因。
+        /// </summary>
+        static readonly string[] ExplanationWords =
+        {
+            "为什么", "原因", "怎么会", "怎么", "如何", "建议", "优先", "先修", "该不该",
+            "值不值", "值得", "正常吗", "算高", "算不算", "对比", "优化方向", "怎么办", "解释", "合理"
+        };
+
+        /// <summary>这个问题是不是「要解释」而不是「要事实」。UI 与本地回答都靠它分流。</summary>
+        public static bool IsExplanationQuestion(string question)
+        {
+            if (string.IsNullOrEmpty(question)) return false;
+            for (int i = 0; i < ExplanationWords.Length; i++)
+            {
+                if (question.IndexOf(ExplanationWords[i], StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
+        }
+
         /// <summary>命中维度（可能多个）。question 为空时返回空列表（= 给全部结论）。</summary>
         public static List<string> MatchedDimensions(string question)
         {
@@ -166,6 +191,17 @@ namespace PerfAgent.Analysis
                   .Append(PerfSnapshot.MinFramesForStats)
                   .Append(" 帧）：帧耗时 / 分配这类结论已被跳过（样本不足，数字会被个别帧主导）。\n")
                   .Append("　 跟随采集会一直录到你退出 Play，多操作几秒再问一次，结论才有意义。\n\n");
+            }
+
+            // 解释类问题要在**开头**就说清楚：本地只能给事实。
+            // 藏在末尾的话，用户看到的就是一段「看着很像答案」的结论列表 ——
+            // 那才会让人觉得「用不用 AI 没区别」。
+            if (IsExplanationQuestion(question))
+            {
+                sb.Append(hits.Count > 0
+                    ? "⚠ 这是**解释类**问题（为什么 / 怎么改 / 先修哪个）：本地引擎只能给事实与证据，给不出因果、取舍与优先级。\n"
+                    : "⚠ 这是**解释类**问题，而本地引擎不理解句子（只按关键词找维度）：它给不出因果、取舍与优先级。\n");
+                sb.Append("　 下面先把它能找到的事实摆出来；要解释就把 AI 打开 —— 开启后同一条问题会同时给出本地结论与 AI 解释。\n\n");
             }
 
             bool any = AppendFindings(sb, s, hits);
@@ -275,6 +311,92 @@ namespace PerfAgent.Analysis
             if (hits.Count == 0)
                 sb.Append("- 这次没匹配到维度，所以把全部结论都列了出来；换几个关键词再问会更聚焦。\n");
             sb.Append("- 需要解释、对比、写给人看的结论时，用「启用 AI」走 LLM（会联网，且由你决定发什么）。\n");
+        }
+
+        /// <summary>
+        /// 给 LLM 的事实底稿。
+        ///
+        /// 用途：AI 模式下把这份文本附在问题后面一起发出去，让模型**在确定性结论之上做解释**，
+        /// 而不是自己从头猜一遍（也少一轮工具调用、省 token）。
+        ///
+        /// 所以它有意识地和 <see cref="Answer"/> 不同：不带「边界（实话）」这类给人看的说明、
+        /// 不用表格，只给维度、结论要点与可引用的数字。
+        /// </summary>
+        public static string BriefForPrompt(PerfSnapshot s, string question)
+        {
+            if (s == null) return "（当前没有快照）";
+
+            var hits = new List<Dimension>();
+            Match(question, hits);
+
+            var sb = new StringBuilder();
+            sb.Append("快照 ").Append(string.IsNullOrEmpty(s.id) ? "（未命名）" : s.id);
+            int window = s.WindowFrames();
+            if (window > 0) sb.Append("，窗口 ").Append(window).Append(" 帧");
+            if (s.WindowTooSmallForStats())
+                sb.Append("（不足 ").Append(PerfSnapshot.MinFramesForStats).Append(" 帧，统计类结论已被规则侧跳过）");
+            sb.Append('\n');
+
+            sb.Append("问的问题命中的维度：");
+            if (hits.Count == 0)
+            {
+                sb.Append("（无关键词命中，下面是全部结论）");
+            }
+            else
+            {
+                for (int i = 0; i < hits.Count; i++)
+                {
+                    if (i > 0) sb.Append('、');
+                    sb.Append(hits[i].name);
+                }
+            }
+            sb.Append('\n');
+
+            sb.Append("规则引擎的结论：\n");
+            int shown = 0;
+            for (int i = 0; i < s.findings.Count; i++)
+            {
+                var f = s.findings[i];
+                if (hits.Count > 0 && !Covers(hits, f.category) && f.category != "采集") continue;
+                if (shown++ >= 10) break;
+                sb.Append("- [").Append(Label(f.severity)).Append("] ").Append(f.title)
+                  .Append("（分类 ").Append(f.category)
+                  .Append("，置信度 ").Append((f.confidence * 100).ToString("0", CultureInfo.InvariantCulture)).Append("%");
+                if (!string.IsNullOrEmpty(f.recommendation)) sb.Append("，建议：").Append(f.recommendation);
+                sb.Append("）\n");
+                for (int k = 0; k < f.evidence.Count && k < 3; k++)
+                {
+                    var e = f.evidence[k];
+                    sb.Append("    证据：").Append(e.metric).Append('=').Append(e.value)
+                      .Append(string.IsNullOrEmpty(e.unit) ? "" : " " + e.unit)
+                      .Append(string.IsNullOrEmpty(e.threshold) ? "" : "（预算 " + e.threshold + "）")
+                      .Append('\n');
+                }
+            }
+            if (shown == 0) sb.Append("- （命中的维度上没有超出预算的结论）\n");
+
+            sb.Append("相关数字：");
+            var names = new List<string>();
+            if (hits.Count == 0) names.AddRange(CoreMetrics);
+            else for (int i = 0; i < hits.Count; i++)
+                for (int k = 0; k < hits[i].metrics.Length; k++)
+                    if (!names.Contains(hits[i].metrics[k])) names.Add(hits[i].metrics[k]);
+
+            int printed = 0;
+            for (int i = 0; i < names.Count; i++)
+            {
+                var m = s.FindMetric(names[i]);
+                if (m == null) continue;
+                sb.Append(printed++ == 0 ? "" : "，")
+                  .Append(m.name).Append('=').Append(m.value.ToString("0.##", CultureInfo.InvariantCulture)).Append(m.unit);
+                if (!string.IsNullOrEmpty(m.budget)) sb.Append("（预算 ").Append(m.budget).Append(m.budgetUnit).Append("）");
+            }
+            if (printed == 0) sb.Append("（无）");
+            sb.Append('\n');
+
+            sb.Append("注意：以上数字由规则引擎从快照算出，可直接引用；没出现的维度就是没有超预算结论，"
+                      + "不要凭空推测那部分。\n");
+            return sb.ToString();
         }
 
         static bool Covers(List<Dimension> hits, string category)
