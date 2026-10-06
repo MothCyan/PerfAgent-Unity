@@ -204,7 +204,20 @@ namespace PerfAgent.Core
             {
                 s.AddNote("已丢弃窗口开头 " + data.warmupFramesDropped
                           + " 帧（约 " + data.warmupSeconds.ToString("0.#", CultureInfo.InvariantCulture)
-                          + " 秒）的启动抖动：域重载、首次 Shader 编译与资源初始化都在那里。");
+                          + " 秒）的启动抖动：域重载、首次 Shader 编译与资源初始化都在那里；"
+                          + "丢弃后参与统计的窗口为 " + data.frameCount + " 帧。");
+            }
+
+            // 窗口过短：比「不给结论」更重要的是说清楚为什么 ——
+            // 实测踩过：只录到 10 帧（约 0.7 秒）就退出 Play，工具照样给出 P50/P95/峰值，
+            // 而 2 帧算出来的这几个数会一模一样，看着精确、实际没有任何意义。
+            if (data.frameCount > 0 && data.frameCount < PerfSnapshot.MinFramesForStats)
+            {
+                s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                    "本次采集窗口只有 {0} 帧（不足统计门槛 {1} 帧）：均值 / P95 / 峰值 / 每帧分配这些量会被个别帧主导，"
+                    + "规则侧已跳过依赖样本量的结论（资源 / 场景 / 代码审计不受影响）。"
+                    + "跟随采集会一直录到你退出 Play，多操作几秒即可（建议 ≥5 秒）。",
+                    data.frameCount, PerfSnapshot.MinFramesForStats));
             }
 
             // ---- 帧耗时（来自抽样帧；百分比只代表抽样）----
@@ -333,8 +346,9 @@ namespace PerfAgent.Core
 
             s.AddNote(string.Format(CultureInfo.InvariantCulture,
                 "每帧托管分配已分口径：实测 {0:0} B/帧（含编辑器自身开销）− 编辑器基线 {1:0} B/帧 = 项目自身约 {2:0} B/帧。"
-                + "基线在编辑模式测、采集在 Play 模式，残差是估算值；只有它明显超过预算且越过基线噪声带才会被当成项目问题。",
-                raw.value, baseline, residual));
+                + "基线在编辑模式测、采集在 Play 模式，残差里仍然混着编辑器 Play 模式的开销（本机空场景实测 14435 B/帧）——"
+                + "所以只有残差明显超过预算、越过基线噪声带、并且越过归因地板 {3:0} B/帧时，才会被当成项目问题。",
+                raw.value, baseline, residual, PerfAgentSettings.Config.budget.editorPlayModeOverheadBytes));
 
             if (residual <= 0)
                 s.AddNote("每帧托管分配与编辑器空闲基线相当 —— 这部分是编辑器自身的开销，不计为项目问题。");

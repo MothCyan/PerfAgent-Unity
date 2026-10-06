@@ -26,6 +26,8 @@ namespace PerfAgent.RuleRegression
             {
                 GcAllocExplosion,
                 EditorOverheadIsNotReportedAsProjectProblem,
+                EmptyProjectPlayModeAllocStaysUnattributed,
+                TinyCaptureWindowSuppressesSampleDependentVerdicts,
                 MissingBaselineSuppressesPerFrameAllocVerdict,
                 ProjectAllocAboveNoiseBandStillFires,
                 ExcessiveDrawCalls,
@@ -130,6 +132,56 @@ namespace PerfAgent.RuleRegression
             True(finding.title.IndexOf("项目每帧托管分配", StringComparison.Ordinal) >= 0,
                 "title must name the project-attributable number: " + finding.title);
             Evidence(finding);
+        }
+
+        /// <summary>
+        /// 实测回归：空工程（SampleScene，4 个 Light、24 个 Draw Call、无用户脚本）在编辑器里跟随采集，
+        /// 「每帧托管分配」= 14435 B/帧、编辑模式空闲基线 = 465 B/帧，残差 13970 B/帧。
+        /// 这组数字曾经让工具报出「严重：项目每帧托管分配约 13970 B，超出预算 2048 B」，
+        /// 但那些分配全都是编辑器自己 Play 模式下的开销（Game View 渲染、URP、Profiler 记录、Inspector 刷新）。
+        ///
+        /// 编辑模式基线（几百 B）与 Play 模式的实际开销（一万多 B）根本不是一个量级，
+        /// 所以残差还必须越过「归因地板」才能归因到项目；过不了就只说「在编辑器里区分不出来」。
+        /// </summary>
+        static void EmptyProjectPlayModeAllocStaysUnattributed()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.capturedFrameCount = 600;      // 窗口够长，把样本量闸门排除在外
+            SetPerFrameAlloc(snapshot, 14435, 465);
+
+            True(snapshot.FindMetric("项目每帧分配").value > Budget.maxManagedAllocBytesPerFrame,
+                "residual must still exceed the player budget, otherwise this test proves nothing");
+            True(Findings(snapshot, "gc_alloc_per_frame").Count == 0,
+                "editor play-mode overhead must not be reported as a project-level gc alloc problem");
+            True(snapshot.notes.Exists(n => n.IndexOf("归因闸门", StringComparison.Ordinal) >= 0),
+                "the snapshot must say which gate the residual failed to pass");
+        }
+
+        /// <summary>
+        /// 实测回归：跟随采集只录到 10 帧（约 0.7 秒）就退出 Play，
+        /// 工具却给出「均值 2.28 / P50 2.27 / P95 2.3 / 峰值 2.3 ms」——
+        /// 2 帧算出来的 P50/P95/峰值会完全相同，看着精确、实际毫无意义。
+        /// 样本量不足时只说明原因，不下统计结论（这里故意把帧耗时放到远超预算的位置）。
+        /// </summary>
+        static void TinyCaptureWindowSuppressesSampleDependentVerdicts()
+        {
+            var snapshot = CleanSnapshot();
+            snapshot.capturedFrameCount = 10;
+            snapshot.SetMetric("帧耗时均值", "ms", 100.0, "Profiler 面板抽样 2/10 帧");
+            for (int i = 0; i < 10; i++)
+                snapshot.frames.Add(new FrameStat { frame = 100 + i, deltaMs = 100.0 });
+
+            True(100.0 > Budget.FrameBudgetMs(), "frame time must be over budget, otherwise this test proves nothing");
+
+            var findings = Evaluate(snapshot);
+            Equal(0, findings.FindAll(f => f.id == "frame_time_over").Count,
+                "a tiny window must not produce a frame-time error");
+            Equal(0, findings.FindAll(f => f.id == "frame_time_jitter").Count,
+                "a tiny window must not produce a jitter verdict");
+
+            var small = Single(snapshot, f => f.id == "sample_too_small");
+            Equal(Severity.Info, small.severity, "sample_too_small severity");
+            Evidence(small);
         }
 
         /// <summary>

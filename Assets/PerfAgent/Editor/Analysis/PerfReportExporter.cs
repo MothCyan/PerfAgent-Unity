@@ -38,7 +38,13 @@ namespace PerfAgent.Analysis
             sb.Append("| 显卡 | ").Append(s.graphicsDevice).Append(" |\n");
             sb.Append("| 渲染管线 | ").Append(s.renderPipeline).Append(" |\n");
             sb.Append("| 场景 | ").Append(s.scenePath).Append(" |\n");
-            sb.Append("| 采样帧数 | ").Append(s.frames.Count).Append(" |\n\n");
+
+            // 「采样帧数」以前写的是逐帧明细条数（2 帧），而附录又写着「窗口共 10 帧」——
+            // 同一个报告里两个帧数对不上。这里改成口径分开写：窗口看整体，明细看抽样。
+            int windowFrames = s.WindowFrames();
+            sb.Append("| 采集窗口 | ")
+              .Append(windowFrames > 0 ? windowFrames.ToString(CultureInfo.InvariantCulture) + " 帧" : "未知")
+              .Append("（逐帧明细抽样 ").Append(s.frames.Count).Append(" 帧） |\n\n");
 
             // ---- 关键指标 ----
             sb.Append("## 关键指标\n\n");
@@ -53,7 +59,20 @@ namespace PerfAgent.Analysis
             }
             sb.Append('\n');
 
+            // 窗口过短时，上面那些分位数/峰值是由很少的样本算出来的（P50 与 P95 甚至可能完全相同），
+            // 必须在表格下面当场说明，否则读者会把这些数字当成可信读数引用。
+            if (windowFrames > 0 && windowFrames < PerfSnapshot.MinFramesForStats)
+            {
+                sb.Append("*注意：本次采集窗口只有 ").Append(windowFrames)
+                  .Append(" 帧（不足 ").Append(PerfSnapshot.MinFramesForStats)
+                  .Append(" 帧）：上面的分位数、峰值与 FPS 由极少量样本算出，可能完全相同，仅供参考；"
+                          + "规则侧没有据此下任何结论。*\n\n");
+            }
+
             // ---- 结论 ----
+            // 同时把「规则写的叙述」单独收集起来：后面的幻觉校验只应该看这些句子，
+            // 而不是去扫表格里的日期、显卡名、帧号 —— 那些是采集器写进去的事实，不是谁的断言。
+            var prose = new StringBuilder();
             sb.Append("## 诊断结论\n\n");
             if (s.findings.Count == 0)
             {
@@ -65,6 +84,7 @@ namespace PerfAgent.Analysis
                 for (int i = 0; i < s.findings.Count; i++)
                 {
                     var f = s.findings[i];
+                    prose.Append(f.title).Append('\n').Append(f.detail).Append('\n').Append(f.recommendation).Append('\n');
                     sb.Append("### ").Append(index++).Append(". [").Append(SeverityLabel(f.severity)).Append("] ").Append(f.title).Append('\n');
                     sb.Append("- **分类**：").Append(f.category).Append("　**置信度**：").Append((f.confidence * 100).ToString("0", CultureInfo.InvariantCulture)).Append("%\n");
                     if (!string.IsNullOrEmpty(f.detail)) sb.Append("- **说明**：").Append(f.detail).Append('\n');
@@ -97,8 +117,34 @@ namespace PerfAgent.Analysis
                 sb.Append("| P50 | ").Append(Fmt(s.FrameTimePercentileMs(50))).Append(" ms |\n");
                 sb.Append("| P95 | ").Append(Fmt(s.FrameTimePercentileMs(95))).Append(" ms |\n");
                 sb.Append("| 峰值 | ").Append(Fmt(s.FrameTimeMaxMs())).Append(" ms |\n");
-                sb.Append("| 平均每帧分配 | ").Append(Fmt(s.AvgManagedAllocBytesPerFrame())).Append(" B |\n");
-                sb.Append("| GC 次数 | ").Append(s.GcEventCount()).Append(" |\n\n");
+
+                // 平均每帧分配：口径优先级与规则侧一致（面板/Recorder 的 GC Allocated In Frame 优先，
+                // 退到 GC.GetTotalMemory 差值时标明，拿不到就写「不可用」）。
+                // 以前这里恒为 0 B —— 与上面「每帧托管分配 14435 B」直接打架。
+                double allocPerFrame = s.MetricValue("每帧托管分配");
+                string allocNote = "（Profiler 面板序列）";
+                if (double.IsNaN(allocPerFrame))
+                {
+                    allocPerFrame = s.AvgRecorderAllocPerFrame();
+                    allocNote = "（ProfilerRecorder）";
+                }
+                if (double.IsNaN(allocPerFrame))
+                {
+                    allocPerFrame = s.AvgManagedAllocBytesPerFrame();
+                    allocNote = "（GC.GetTotalMemory 差值，弱口径）";
+                }
+                sb.Append("| 平均每帧分配 | ")
+                  .Append(double.IsNaN(allocPerFrame) ? "不可用" : Fmt(allocPerFrame) + " B " + allocNote)
+                  .Append(" |\n");
+                // 不再输出「GC 次数」：Profiler 面板没有 GC 事件计数这个序列（口径说明里已写明已移除），
+                // 以前那行打的恒为 0，属于凭空造数。
+                sb.Append('\n');
+
+                if (s.WindowTooSmallForStats())
+                {
+                    sb.Append("*本次窗口只有 ").Append(windowFrames)
+                      .Append(" 帧，以上统计量仅供参考；需要足够样本的结论已跳过（见诊断结论）。*\n\n");
+                }
 
                 var spikes = s.SpikeFrames(10);
                 if (spikes.Count > 0)
@@ -145,7 +191,8 @@ namespace PerfAgent.Analysis
                 sb.Append("- 提示：").Append(s.notes[i]).Append('\n');
 
             var text = sb.ToString();
-            var unverified = UnverifiedNumbers(text, s);
+            // 只校验规则写出来的叙述部分（prose），表格里的数字属于采集事实，用不着逐一对账。
+            var unverified = UnverifiedNumbers(prose.ToString(), s, text);
             if (unverified.Count > 0)
             {
                 sb.Append("\n### 未验证数值（未在证据集中找到出处，仅供人工复核）\n\n");
@@ -231,7 +278,12 @@ code{font-family:Consolas,monospace;background:#22262e;padding:1px 4px;border-ra
             sb.Append("<div class=\"muted\">").Append(Html(s.capturedUtc)).Append(" · Unity ").Append(Html(s.unityVersion))
               .Append(" · ").Append(Html(s.platform)).Append(" · ").Append(Html(s.graphicsDevice))
               .Append(" · 渲染管线 ").Append(Html(s.renderPipeline))
-              .Append(" · 采样 ").Append(s.frames.Count).Append(" 帧</div>");
+              // 与 Markdown 口径一致：窗口帧数（录了多少）与明细抽样数分开写
+              .Append(" · 采集窗口 ").Append(s.WindowFrames() > 0 ? s.WindowFrames().ToString(CultureInfo.InvariantCulture) + " 帧" : "未知")
+              .Append("（明细 ").Append(s.frames.Count).Append(" 帧）</div>");
+            if (s.WindowTooSmallForStats())
+                sb.Append("<p class=\"muted\">窗口帧数不足 ").Append(PerfSnapshot.MinFramesForStats)
+                  .Append(" 帧：统计类结论已跳过，仅资源 / 场景 / 代码审计有效。</p>");
 
             sb.Append("<h2>关键指标</h2><table><tr><th>指标</th><th>值</th><th>预算</th><th>来源</th></tr>");
             for (int i = 0; i < s.metrics.Count; i++)
@@ -325,7 +377,12 @@ code{font-family:Consolas,monospace;background:#22262e;padding:1px 4px;border-ra
         // =====================================================================
 
         /// <summary>找出报告文本中无法在证据集中回溯的数值。</summary>
-        public static List<string> UnverifiedNumbers(string text, PerfSnapshot s)
+        /// <param name="dataText">
+        /// 报告里由采集器写入的数据部分（环境表、指标表、口径说明等）。
+        /// 这些数字都是直接从快照里抄的，不需要对账 —— 传进来可以避免把
+        /// 「2026」「5060（显卡型号）」「7632（帧号）」这种事实当成可疑数字列进附录。
+        /// </param>
+        public static List<string> UnverifiedNumbers(string text, PerfSnapshot s, string dataText = null)
         {
             var allowed = new HashSet<string>();
             if (s != null)
@@ -346,7 +403,9 @@ code{font-family:Consolas,monospace;background:#22262e;padding:1px 4px;border-ra
                     AddVariants(allowed, Fmt(s.metrics[i].value));
                     AddVariants(allowed, s.metrics[i].budget);
                 }
+                for (int i = 0; i < s.notes.Count; i++) AddVariants(allowed, s.notes[i]);
             }
+            if (!string.IsNullOrEmpty(dataText)) AddVariants(allowed, dataText);
 
             var result = new List<string>();
             if (string.IsNullOrEmpty(text)) return result;

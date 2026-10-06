@@ -166,11 +166,21 @@ namespace PerfAgent.Core
             if (snapshot == null || budget == null) return;
             SetBudget(snapshot, "主线程帧耗时", budget.FrameBudgetMs(), "ms");
             // 「每帧托管分配」是含编辑器开销的实测值，不能直接套播放器预算 ——
-            // 否则空工程也会被标成超标。预算只套在归因后的「项目每帧分配」上；
-            // 没有归因结果（没测到基线）时干脆不标预算。
-            if (snapshot.FindMetric("项目每帧分配") != null)
-                SetBudget(snapshot, "项目每帧分配", budget.maxManagedAllocBytesPerFrame, "B");
+            // 否则空工程也会被标成超标。预算只套在归因后的「项目每帧分配」上，
+            // 而且残差还得先越过「归因地板」（编辑器 Play 模式自身开销上界）：
+            // 地板以下的残差无法归因，给它标个红只会重演「空工程报严重」这个假问题。
+            var projectAlloc = snapshot.FindMetric("项目每帧分配");
+            if (projectAlloc != null)
+            {
+                double floor = Math.Max(budget.maxManagedAllocBytesPerFrame, budget.editorPlayModeOverheadBytes);
+                if (projectAlloc.value > floor) SetBudget(snapshot, "项目每帧分配", budget.maxManagedAllocBytesPerFrame, "B");
+                else projectAlloc.severity = Severity.Info;   // 不设预算、不标红，原因写进附录的口径说明
+            }
+
             SetBudget(snapshot, "Draw Calls", budget.maxDrawCalls, "次");
+            // 面板序列给的 Draw Call 叫「Draw Calls 均值」（覆盖整段窗口，比单点读数可信）——
+            // 两个名字都尝试：SetBudget 对不存在的指标是空操作。
+            SetBudget(snapshot, "Draw Calls 均值", budget.maxDrawCalls, "次");
             SetBudget(snapshot, "SetPass Calls", budget.maxSetPassCalls, "次");
             SetBudget(snapshot, "Triangles", budget.maxTriangles, "个");
             SetBudget(snapshot, "TempAllocator", budget.maxTempAllocatorMB * 1024L * 1024L, "B");

@@ -16,6 +16,22 @@ namespace PerfAgent.Core
         public long maxManagedAllocBytesPerFrame = 2048;      // 稳态每帧托管分配上限（0 = 零容忍）
         public double maxMainThreadMs = 10.0;                 // 主线程预算（0 = 由目标帧率推算）
 
+        /// <summary>
+        /// 编辑器自己在 Play 模式下的每帧托管分配上界（B/帧）—— 「归因地板」。
+        ///
+        /// <para><b>为什么必须有它</b></para>
+        /// 「每帧托管分配」是全进程口径。编辑模式空闲时它只有几百 B，但一旦进入 Play，
+        /// Game View 渲染、URP、Profiler 记录、Inspector 刷新叠加起来就要一万多 B/帧。
+        /// 本机实测：空场景（SampleScene，4 个 Light、24 个 Draw Call、无用户脚本）
+        /// 在编辑器 Play 下实测 14435 B/帧，而编辑模式空闲基线只有 465 B/帧 ——
+        /// 两者不是一个量级，减完剩下的残差里仍然满是编辑器自身的开销。
+        ///
+        /// 所以残差低于这个量级时，工具**无法**把它与编辑器开销区分开：
+        /// 这时宁可不报（只写一句说明），也不能把一个空工程报成「严重：每帧分配超预算」。
+        /// 要确认真实分配，只能用 Player 构建版（那里没有编辑器开销）。
+        /// </summary>
+        public long editorPlayModeOverheadBytes = 16384;
+
         [Header("渲染")]
         public int maxDrawCalls = 300;
         public int maxSetPassCalls = 100;

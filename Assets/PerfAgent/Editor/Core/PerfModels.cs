@@ -230,6 +230,15 @@ namespace PerfAgent.Core
     [Serializable]
     public class PerfSnapshot
     {
+        /// <summary>
+        /// 统计类结论所需的最小采集窗口（帧）。
+        ///
+        /// 均值/P95/峰值这些量需要足够多的样本才有意义：10 帧算出来的 P95 就是那 10 帧里的某一个，
+        /// 而 2 帧的「P50/P95/峰值」三个数字会完全相同（实测就出现过：2.27 / 2.3 / 2.3）。
+        /// 低于这个帧数时规则侧不下统计结论，只在报告里说明为什么 —— 比给一个看似精确的假数字强。
+        /// </summary>
+        public const int MinFramesForStats = 30;
+
         // ---- 元信息 ----
         public string id = "";
         public string label = "";
@@ -272,6 +281,23 @@ namespace PerfAgent.Core
         /// 旧快照没有这个字段，读到 0 时回退到 frames.Count。
         /// </summary>
         public int capturedFrameCount;
+
+        /// <summary>
+        /// 本次采集的窗口帧数：capturedFrameCount 优先，旧快照（字段缺失 = 0）回退到逐帧明细数。
+        /// 返回 0 表示快照没记录窗口大小（老数据 / 测试里手工构造）—— 调用方应视为「未知」而不做样本量闸门。
+        /// </summary>
+        public int WindowFrames()
+        {
+            if (capturedFrameCount > 0) return capturedFrameCount;
+            return frames == null ? 0 : frames.Count;
+        }
+
+        /// <summary>窗口帧数是否不足以支撑统计类结论；帧数未知（0）时不介入。</summary>
+        public bool WindowTooSmallForStats()
+        {
+            int n = WindowFrames();
+            return n > 0 && n < MinFramesForStats;
+        }
 
         public List<FrameStat> frames = new List<FrameStat>();
         public List<MarkerStat> markers = new List<MarkerStat>();

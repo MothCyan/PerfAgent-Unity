@@ -192,7 +192,11 @@ namespace PerfAgent.Agent
             var r = new Dictionary<string, object>();
             r["snapshot_id"] = snap.id;
             r["captured_utc"] = snap.capturedUtc;
+            // 窗口帧数（本次采集一共录了多少帧）与明细抽样数分开给：
+            // 只给后者会让 LLM 把「抽样 2 帧」当成「只录了 2 帧」，也会拿它去下统计结论。
+            r["window_frames"] = snap.WindowFrames();
             r["sampled_frames"] = snap.frames.Count;
+            r["window_too_small_for_stats"] = snap.WindowTooSmallForStats();
 
             var env = new Dictionary<string, object>();
             env["unity"] = snap.unityVersion;
@@ -283,13 +287,23 @@ namespace PerfAgent.Agent
             if (snap.frames.Count == 0) return Error("当前快照没有帧数据（只做了静态审计）。请换一份带帧数据的快照。");
 
             var r = new Dictionary<string, object>();
+            r["window_frames"] = snap.WindowFrames();
+            r["window_too_small_for_stats"] = snap.WindowTooSmallForStats();
             r["sampled_frames"] = snap.frames.Count;
             r["avg_ms"] = snap.FrameTimeAvgMs();
             r["p50_ms"] = snap.FrameTimePercentileMs(50);
             r["p95_ms"] = snap.FrameTimePercentileMs(95);
             r["max_ms"] = snap.FrameTimeMaxMs();
-            r["avg_managed_alloc_bytes_per_frame"] = snap.AvgManagedAllocBytesPerFrame();
-            r["gc_events"] = snap.GcEventCount();
+
+            // 平均每帧分配：口径优先级与报告/规则一致（面板序列 → ProfilerRecorder → GC.GetTotalMemory 差值）。
+            // 拿不到就返回 -1 让调用方显式降级：以前这里在 Recorder 口径可用时也可能打 0，
+            // 而「0 B/帧」看起来像「零分配」这个好消息，会被当成实测值引用。
+            double allocPerFrame = snap.MetricValue("每帧托管分配");
+            if (double.IsNaN(allocPerFrame)) allocPerFrame = snap.AvgRecorderAllocPerFrame();
+            if (double.IsNaN(allocPerFrame)) allocPerFrame = snap.AvgManagedAllocBytesPerFrame();
+            r["avg_alloc_bytes_per_frame"] = double.IsNaN(allocPerFrame) ? -1.0 : allocPerFrame;
+            // gc_events 已移除：Profiler 面板没有 GC 事件计数这个序列，以前那项恒为 0，属于凭空的数字。
+            // 想知道 GC 何时发生，看帧耗时尖峰与分配 P95。
 
             var spikes = snap.SpikeFrames(10);
             var spikeList = new List<object>();

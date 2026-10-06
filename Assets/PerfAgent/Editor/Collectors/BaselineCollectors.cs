@@ -158,23 +158,37 @@ namespace PerfAgent.Collectors
             s.SetMetric("TempAllocator", "B", MemApi.TempAllocator, "Profiler.GetTempAllocatorSize");
             s.SetMetric("GPU 驱动内存", "B", MemApi.GraphicsDriver, "Profiler.GetAllocatedMemoryForGraphicsDriver");
 
-            // 对象计数（stat name 不存在时 recorder.Valid == false，自动跳过，不会产生脏数据）
-            AddCount(s, ProfilerCategory.Render, "Texture Count", "纹理数量");
-            AddCount(s, ProfilerCategory.Render, "Mesh Count", "网格数量");
-            AddCount(s, ProfilerCategory.Render, "Material Count", "材质数量");
-            AddCount(s, ProfilerCategory.Memory, "Texture Memory", "纹理内存");
-            AddCount(s, ProfilerCategory.Memory, "Object Count", "对象总数");
+            // 对象计数：面板序列优先（整段窗口），其次才是 ProfilerRecorder 的单点读数。
+            // 单点读数读出 0 的一律按「读不到」处理 —— 实测过：空工程里这 5 个计数器全是 0，
+            // 于是报告里出现「纹理数量 0 个 / 网格数量 0 个 / 对象总数 0 个」这一串脏行，
+            // 而同一份报告的另一处又写着面板序列的 Draw Calls 24 —— 自相矛盾，只会让人不再信任工具。
+            var unavailable = new List<string>();
+            AddCount(s, ProfilerCategory.Render, "Texture Count", "纹理数量", unavailable);
+            AddCount(s, ProfilerCategory.Render, "Mesh Count", "网格数量", unavailable);
+            AddCount(s, ProfilerCategory.Render, "Material Count", "材质数量", unavailable);
+            AddCount(s, ProfilerCategory.Memory, "Texture Memory", "纹理内存", unavailable);
+            AddCount(s, ProfilerCategory.Memory, "Object Count", "对象总数", unavailable);
+            if (unavailable.Count > 0)
+                s.AddNote("以下计数器本次读出 0（或取不到），已按「不可用」处理、不写进指标表："
+                          + string.Join("、", unavailable.ToArray())
+                          + "。这些 Memory/Render 计数器只在 Profiler 采到对应数据时才有值；同一计数器的面板序列（若可用）优先于这里的单点读数。");
 
             s.SetMetric("托管堆占用", "B", GC.GetTotalMemory(false), "GC.GetTotalMemory");
-            s.SetMetric("托管堆上限", "B", (double)GC.MaxGeneration, "GC.MaxGeneration (GC 代数上限)");
+            // 不再输出 `GC.MaxGeneration`：它是 GC 代数编号（0/1/2），不是堆上限，
+            // 以前按字节写成「托管堆上限 0 B」，是纯粹的误导 —— 直接删掉。
         }
 
-        static void AddCount(PerfSnapshot s, ProfilerCategory cat, string stat, string label)
+        static void AddCount(PerfSnapshot s, ProfilerCategory cat, string stat, string label, List<string> unavailable)
         {
+            if (s.FindMetric(label) != null) return;   // 面板序列已给出整段窗口的值，不覆盖
+
             var r = StatRecorder.Make(cat, stat);
             try
             {
-                if (r.Valid) s.SetMetric(label, stat.IndexOf("Memory", StringComparison.Ordinal) >= 0 ? "B" : "个", r.LastValue, "ProfilerRecorder:" + stat);
+                if (!r.Valid) { unavailable.Add(label); return; }
+                long v = r.LastValue;
+                if (v <= 0) { unavailable.Add(label + "（" + stat + "）"); return; }
+                s.SetMetric(label, stat.IndexOf("Memory", StringComparison.Ordinal) >= 0 ? "B" : "个", v, "ProfilerRecorder:" + stat);
             }
             finally { if (r.Valid) r.Dispose(); }
         }
@@ -194,31 +208,55 @@ namespace PerfAgent.Collectors
             var s = ctx.snapshot;
             if (s == null) return;
 
+            // 面板序列（整段窗口）优先；单点读数读出 0 的一律按「读不到」处理。
+            // 实测踩过：报告里同时出现「Draw Calls 0 次（预算 300）」与「Draw Calls 均值 24 次」，
+            // 一个是单点、一个是整段窗口，却摆在一起互相矛盾。
+            var unavailable = new List<string>();
             bool got = false;
-            got |= Add(s, "Draw Calls", "次", ProfilerCategory.Render, "Draw Calls Count");
-            got |= Add(s, "Batches", "次", ProfilerCategory.Render, "Batches Count");
-            got |= Add(s, "SetPass Calls", "次", ProfilerCategory.Render, "SetPass Calls Count");
-            got |= Add(s, "Triangles", "个", ProfilerCategory.Render, "Triangles Count");
-            got |= Add(s, "Vertices", "个", ProfilerCategory.Render, "Vertices Count");
+            got |= Add(s, "Draw Calls", "次", ProfilerCategory.Render, "Draw Calls Count", unavailable);
+            got |= Add(s, "Batches", "次", ProfilerCategory.Render, "Batches Count", unavailable);
+            got |= Add(s, "SetPass Calls", "次", ProfilerCategory.Render, "SetPass Calls Count", unavailable);
+            got |= Add(s, "Triangles", "个", ProfilerCategory.Render, "Triangles Count", unavailable);
+            got |= Add(s, "Vertices", "个", ProfilerCategory.Render, "Vertices Count", unavailable);
 
             if (!got)
             {
                 // 回退：Game View 统计栏用的 UnityStats
                 if (!AddFromUnityStats(s))
-                    s.AddNote("渲染统计不可用：ProfilerRecorder 的 Render 计数器与 UnityStats 均未取到数据。");
+                    s.AddNote("渲染统计不可用：ProfilerRecorder 的 Render 计数器读出 0 或取不到"
+                              + (unavailable.Count > 0 ? "（" + string.Join("、", unavailable.ToArray()) + "）" : "")
+                              + "，面板序列与 UnityStats 也都没数据。");
+            }
+            else if (unavailable.Count > 0)
+            {
+                s.AddNote("以下渲染计数器本次读出 0（或取不到），已跳过、不写进指标表："
+                          + string.Join("、", unavailable.ToArray()) + "。");
             }
         }
 
-        static bool Add(PerfSnapshot s, string label, string unit, ProfilerCategory cat, string stat)
+        static bool Add(PerfSnapshot s, string label, string unit, ProfilerCategory cat, string stat, List<string> unavailable)
         {
+            if (PanelProvided(s, label)) return true;   // 面板序列覆盖整段窗口，比单点读数可信
+
             var r = StatRecorder.Make(cat, stat);
             try
             {
-                if (!r.Valid) return false;
-                s.SetMetric(label, unit, r.LastValue, "ProfilerRecorder:" + stat);
+                if (!r.Valid) { unavailable.Add(label); return false; }
+                long v = r.LastValue;
+                if (v <= 0) { unavailable.Add(label); return false; }
+                s.SetMetric(label, unit, v, "ProfilerRecorder:" + stat);
                 return true;
             }
             finally { if (r.Valid) r.Dispose(); }
+        }
+
+        /// <summary>
+        /// 面板序列是否已经给出同一计数器的值。
+        /// 面板给 Draw Call 用的指标名是「Draw Calls 均值」，所以两种写法都要看。
+        /// </summary>
+        static bool PanelProvided(PerfSnapshot s, string label)
+        {
+            return s.FindMetric(label) != null || s.FindMetric(label + " 均值") != null;
         }
 
         /// <summary>UnityEditorInternal.UnityStats 是 Game View 统计栏的数据源，走反射以免版本差异。</summary>

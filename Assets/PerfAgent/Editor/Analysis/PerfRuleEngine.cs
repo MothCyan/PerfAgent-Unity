@@ -30,6 +30,7 @@ namespace PerfAgent.Analysis
             EvaluatePhysics(findings, s);
             EvaluateCode(findings, s);
             EvaluateConfiguration(findings, s);
+            EvaluateSampleSize(findings, s, b);
 
             findings.Sort((x, y) =>
             {
@@ -40,6 +41,36 @@ namespace PerfAgent.Analysis
 
             s.findings = findings;
             return findings;
+        }
+
+        // =====================================================================
+        // 采集质量
+        // =====================================================================
+
+        /// <summary>
+        /// 采集窗口太短时不产统计类结论，而是明说为什么。
+        ///
+        /// 实测踩过：跟随采集只跑了 10 帧（约 0.7 秒），工具照样给出
+        /// 「均值 2.28 / P50 2.27 / P95 2.3 / 峰值 2.3 ms」与「FPS 438」——
+        /// 2 帧算出来的「P95」就是那 2 帧里的一个，看着精确，实际毫无意义。
+        /// 宁可说「样本不够」，也不编一个精确的假数字。
+        /// </summary>
+        static void EvaluateSampleSize(List<PerfFinding> outList, PerfSnapshot s, PerfBudget b)
+        {
+            int window = s.WindowFrames();
+            if (window <= 0 || window >= PerfSnapshot.MinFramesForStats) return;
+
+            var f = New("sample_too_small", "采集", Severity.Info,
+                string.Format(CultureInfo.InvariantCulture, "采集窗口只有 {0} 帧，统计类结论已跳过", window),
+                string.Format(CultureInfo.InvariantCulture,
+                    "均值 / P95 / 峰值 / 每帧分配这类量需要足够多的帧才有意义（门槛 {0} 帧）。"
+                    + "本次窗口只录到 {1} 帧，数值会被个别帧主导，所以规则侧不下判断；"
+                    + "资源、场景、代码这类不依赖帧数据的审计结论不受影响，照常给出。",
+                    PerfSnapshot.MinFramesForStats, window),
+                "跟随采集时多操作几秒（建议 ≥5 秒）：它会一直录到你退出 Play 或手动停止。", 0.9f);
+            Ev(f, "frame_capture", "采集窗口帧数", window.ToString(CultureInfo.InvariantCulture), "帧",
+                PerfSnapshot.MinFramesForStats + " 帧", "Profiler 面板帧历史（窗口起止帧号之差）");
+            outList.Add(f);
         }
 
         // =====================================================================
@@ -67,6 +98,11 @@ namespace PerfAgent.Analysis
                     avgM.value, p95, max, MaxPlausibleFrameMs));
                 return;
             }
+
+            // 样本量闸门：窗口太短时均值/P95/峰值会被个别帧主导（实测出现过 2 帧算出
+            // 「P50 2.27 / P95 2.3 / 峰值 2.3」这种看着精确、实际毫无意义的数字），
+            // 所以这里不下结论，改为由 EvaluateSampleSize 统一说明原因。
+            if (s.WindowTooSmallForStats()) return;
 
             if (budgetMs > 0 && p95 > budgetMs)
             {
@@ -228,6 +264,39 @@ namespace PerfAgent.Analysis
         // 分配与 GC
         // =====================================================================
 
+        /// <summary>
+        /// 会产生每帧分配的脚本反模式 id（见 ScriptAntipatternCollector 的 Patterns）。
+        /// 命中它们意味着项目脚本侧确实存在稳态分配点。
+        /// </summary>
+        static readonly string[] AllocPatternIds =
+        {
+            "gc_collection_new", "gc_array_new", "gc_string_concat", "gc_string_format",
+            "linq", "foreach_enumerator", "new_waitfor", "stringbuilder_new", "sort_alloc", "debug_log"
+        };
+
+        /// <summary>
+        /// 脚本扫描里命中了几处「每帧分配」写法。
+        ///
+        /// 它只是**佐证**，不是闸门：命中可以提高置信度，没命中也不能断定没问题
+        ///（第三方代码、反射调用、协程里的闭包都扫不到），只是要在结论里如实说明。
+        /// </summary>
+        static int CountAllocPatterns(PerfSnapshot s)
+        {
+            if (s.codeIssues == null) return 0;
+
+            int n = 0;
+            for (int i = 0; i < s.codeIssues.Count; i++)
+            {
+                string p = s.codeIssues[i].pattern;
+                if (string.IsNullOrEmpty(p)) continue;
+                for (int k = 0; k < AllocPatternIds.Length; k++)
+                {
+                    if (p.IndexOf(AllocPatternIds[k], StringComparison.Ordinal) >= 0) { n++; break; }
+                }
+            }
+            return n;
+        }
+
         static void EvaluateAllocations(List<PerfFinding> outList, PerfSnapshot s, PerfBudget b)
         {
             var rawAlloc = s.FindMetric("每帧托管分配");
@@ -239,27 +308,55 @@ namespace PerfAgent.Analysis
             // 那是工具制造的假问题，不是项目的问题。没有归因结果时宁可不报。
             if (alloc != null && !double.IsNaN(alloc.value))
             {
-                // 基线与 Play 模式的实际开销不完全一致，留一条噪声带；没量到基线就不信任残差
-                double noise = baseline == null ? double.MaxValue : Math.Max(4096.0, baseline.value * 0.25);
+                // 三道闸门，缺一不报：
+                //   1. 播放器预算（用户设的稳态每帧分配上限）
+                //   2. 基线噪声带 —— 基线与 Play 模式的实际开销不会完全一致，留一条带子
+                //   3. 归因地板 —— 编辑器在 Play 模式下自身就要分配的量级。
+                //      实测：空场景（无用户脚本）在编辑器 Play 下是 14435 B/帧，而编辑模式空闲基线只有 465 B/帧，
+                //      两者不是一个量级 —— 残差落在地板以下时，无法把它与编辑器开销区分开，报了就是假问题。
+                double noise = baseline == null ? double.MaxValue : Math.Max(8192.0, baseline.value * 0.25);
+                double floor = Math.Max(Math.Max(b.maxManagedAllocBytesPerFrame, noise), b.editorPlayModeOverheadBytes);
 
-                if (alloc.value > b.maxManagedAllocBytesPerFrame && alloc.value > noise)
+                if (alloc.value > floor && !s.WindowTooSmallForStats())
                 {
+                    int allocPatterns = CountAllocPatterns(s);
+                    string corroboration = allocPatterns > 0
+                        ? string.Format(CultureInfo.InvariantCulture,
+                            "脚本扫描同时找到 {0} 处「每帧分配」类写法，与读数一致。", allocPatterns)
+                        : "脚本扫描未找到每帧分配写法（第三方代码、反射调用扫不到），建议再用 Player 构建版复核一遍。";
+
                     var f = New("gc_alloc_per_frame", "内存", Severity.Error,
                         string.Format(CultureInfo.InvariantCulture, "项目每帧托管分配约 {0:0} B，超出预算 {1} B",
                             alloc.value, b.maxManagedAllocBytesPerFrame),
                         string.Format(CultureInfo.InvariantCulture,
-                            "已扣除编辑器自身开销（实测 {0:0} B/帧 − 基线 {1:0} B/帧）。"
-                            + "稳态每帧分配会导致 GC 周期性触发，表现为规律性卡顿尖峰。",
+                            "已扣除编辑器自身开销（实测 {0:0} B/帧 − 基线 {1:0} B/帧），且越过归因地板 {2:0} B/帧。"
+                            + "稳态每帧分配会导致 GC 周期性触发，表现为规律性卡顿尖峰。{3}",
                             rawAlloc == null ? 0 : rawAlloc.value,
-                            baseline == null ? 0 : baseline.value),
-                        "扫描脚本反模式列表（get_code_issues），优先处理每帧 new 容器/字符串/LINQ 的写法。", 0.8f);
+                            baseline == null ? 0 : baseline.value,
+                            b.editorPlayModeOverheadBytes, corroboration),
+                        "扫描脚本反模式列表（get_code_issues），优先处理每帧 new 容器/字符串/LINQ 的写法。",
+                        allocPatterns > 0 ? 0.8f : 0.6f);
                     Ev(f, "frame_capture", "项目每帧分配", Fmt(alloc.value), "B",
                         b.maxManagedAllocBytesPerFrame.ToString(CultureInfo.InvariantCulture), alloc.source);
                     if (rawAlloc != null)
                         Ev(f, "frame_capture", "每帧托管分配（含编辑器开销）", Fmt(rawAlloc.value), "B", "", rawAlloc.source);
                     if (baseline != null)
                         Ev(f, "frame_capture", "编辑器开销基线", Fmt(baseline.value), "B", "", baseline.source);
+                    Ev(f, "frame_capture", "归因地板（编辑器 Play 模式开销上界）",
+                        b.editorPlayModeOverheadBytes.ToString(CultureInfo.InvariantCulture), "B",
+                        "残差必须越过它才能归因到项目", "PerfBudget.editorPlayModeOverheadBytes（空场景实测 14435 B/帧）");
                     outList.Add(f);
+                }
+                else if (alloc.value > b.maxManagedAllocBytesPerFrame)
+                {
+                    // 越过预算但过不了闸门：不报结论，但要写清楚为什么 ——
+                    // 否则用户会以为「数字这么吓人，工具却什么都不说」。
+                    s.AddNote(string.Format(CultureInfo.InvariantCulture,
+                        "项目每帧分配估算 {0:0} B/帧 虽然超过播放器预算 {1} B，但未越过归因闸门"
+                        + "（归因地板 {2:0} B/帧、基线噪声带 {3} B/帧{4}）：在编辑器里它无法与编辑器自身的 "
+                        + "Play 模式开销区分开，因此本次不报为项目问题。要确认真实分配，请用 Player 构建版复核（构建里没有编辑器开销）。",
+                        alloc.value, b.maxManagedAllocBytesPerFrame, b.editorPlayModeOverheadBytes, noise,
+                        s.WindowTooSmallForStats() ? "、且窗口帧数不足 " + PerfSnapshot.MinFramesForStats + " 帧" : ""));
                 }
                 else if (alloc.value > 0 && b.maxManagedAllocBytesPerFrame == 0 && alloc.value > noise)
                 {
@@ -350,23 +447,30 @@ namespace PerfAgent.Analysis
 
         static void EvaluateRendering(List<PerfFinding> outList, PerfSnapshot s, PerfBudget b)
         {
-            AddOverBudget(outList, s, "Draw Calls", b.maxDrawCalls, "次", "渲染", "draw_calls_over",
+            // Draw Call 的窗口均值叫「Draw Calls 均值」（面板序列口径），单点读数叫「Draw Calls」。
+            // 均值覆盖整段窗口，比单帧读数可信，优先用它 —— 否则面板序列一改名，这条规则就会静默失效。
+            AddOverBudget(outList, s, "Draw Calls", "Draw Calls 均值", b.maxDrawCalls, "次", "渲染", "draw_calls_over",
                 "Draw Call 过高说明合批被打断或材质/贴图种类过多。",
                 "检查静态批处理标记、共享材质、图集化与小物件合并（GPU Instancing / SRP Batcher）。");
 
-            AddOverBudget(outList, s, "SetPass Calls", b.maxSetPassCalls, "次", "渲染", "setpass_over",
+            AddOverBudget(outList, s, "SetPass Calls", null, b.maxSetPassCalls, "次", "渲染", "setpass_over",
                 "SetPass Call 高说明着色器状态切换频繁，往往比 Draw Call 更致命。",
                 "按材质排序、合并 Shader 变体、使用 MaterialPropertyBlock 而非多材质实例。");
 
-            AddOverBudget(outList, s, "Triangles", b.maxTriangles, "个", "渲染", "triangles_over",
+            AddOverBudget(outList, s, "Triangles", null, b.maxTriangles, "个", "渲染", "triangles_over",
                 "三角面数超标通常是模型 LOD 缺失或大量小物件未剔除。",
                 "引入 LOD、遮挡剔除（Occlusion Culling）与距离裁剪。");
         }
 
-        static void AddOverBudget(List<PerfFinding> outList, PerfSnapshot s, string metricName, double budget, string unit,
-            string category, string id, string why, string how)
+        /// <summary>
+        /// 预算对比。windowedName 是同一计数器的「整段窗口均值」指标名（可为 null）：
+        /// 面板序列覆盖窗口内每一帧，比 ProfilerRecorder 的单点读数可信，有它就优先用。
+        /// </summary>
+        static void AddOverBudget(List<PerfFinding> outList, PerfSnapshot s, string metricName, string windowedName,
+            double budget, string unit, string category, string id, string why, string how)
         {
-            var m = s.FindMetric(metricName);
+            var m = string.IsNullOrEmpty(windowedName) ? null : s.FindMetric(windowedName);
+            if (m == null) m = s.FindMetric(metricName);
             if (m == null || budget <= 0 || m.value <= budget) return;
 
             string severity = m.value > budget * 1.5 ? Severity.Error : Severity.Warn;
